@@ -148,11 +148,18 @@ class RhoFoldPredictor:
         # seq: residue-type integers 0-3 (used by structure_module)
         seq_int = [NUC_TO_IDX.get(c.upper(), 0) for c in sequence]
 
-        # tokens:       (bs=1, msa_depth=1, L) — MSAEmbedder expects 3D
-        # rna_fm_tokens: (bs=1, L)             — RNA-FM model expects 2D
-        rna_fm_tokens = tokens.squeeze(1) if tokens.dim() == 3 else tokens
+        # RNA-FM tokeniser adds BOS (1) and EOS (2) tokens.
+        # rna_fm_tokens: (bs=1, L+2) — RNA-FM model needs BOS/EOS, expects 2D
+        # tokens:        (bs=1, msa_depth=1, L) — structure_module needs raw seq only
+        # Strip BOS/EOS from tokens so length matches seq_int (L, not L+2)
+        rna_fm_tokens = tokens.squeeze(1) if tokens.dim() == 3 else tokens  # keep BOS/EOS
         if tokens.dim() == 2:
-            tokens = tokens.unsqueeze(1)   # (1, 1, L)
+            tokens_inner = tokens[:, 1:-1]           # strip BOS/EOS → (1, L)
+        else:
+            tokens_inner = tokens[:, :, 1:-1]        # strip BOS/EOS → (1, msa, L)
+        if tokens_inner.dim() == 2:
+            tokens_inner = tokens_inner.unsqueeze(1)  # → (1, 1, L)
+        tokens = tokens_inner
 
         # ── Forward pass ──────────────────────────────────────────────
         with torch.inference_mode():
