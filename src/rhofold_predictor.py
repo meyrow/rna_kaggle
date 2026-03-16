@@ -31,15 +31,17 @@ NUC_TO_IDX = {"A": 0, "C": 1, "G": 2, "U": 3, "T": 3, "N": 0}
 
 # Checkpoint search paths
 RHOFOLD_CKPT_CANDIDATES = [
-    "/kaggle/input/rhofold-model/rhofold_pretrained_params.pt",
+    "/kaggle/input/rhofold-model/rhofold_pretrained_params.pt",          # Kaggle dataset flat
     "/kaggle/input/rhofold-model/RhoFold/pretrained/rhofold_pretrained_params.pt",
-    "models/rhofold/rhofold_pretrained_params.pt",
+    "/kaggle/input/rhofold-model/pretrained/rhofold_pretrained_params.pt",
+    "models/rhofold/rhofold_pretrained_params.pt",                       # local
     "/home/ilan/kaggle/data/models/rhofold/rhofold_pretrained_params.pt",
 ]
 RHOFOLD_REPO_CANDIDATES = [
-    "/kaggle/input/rhofold-model/RhoFold",
-    "external/RhoFold",
-    "/home/ilan/kaggle/data/external/RhoFold",
+    "/kaggle/input/rhofold-model",                   # if RhoFold code is at dataset root
+    "/kaggle/input/rhofold-model/RhoFold",           # if uploaded as subfolder
+    "external/RhoFold",                              # local relative
+    "/home/ilan/kaggle/data/external/RhoFold",       # local absolute
 ]
 
 

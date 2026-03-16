@@ -221,7 +221,7 @@ print(f'OUTPUT_DIR : {OUTPUT_DIR}')
         import yaml
 
         # Load config
-        config_path = Path(PIPELINE_DIR) / "config" / "config.yaml"
+        config_path = Path(".") / "config" / "config.yaml"
         if config_path.exists():
             with open(config_path) as f:
                 cfg = yaml.safe_load(f)
