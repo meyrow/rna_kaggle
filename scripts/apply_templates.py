@@ -101,10 +101,11 @@ def main():
 
         tlen = len(coords)
 
-        # Skip if length mismatch > 20% (poor alignment, padded coords hurt score)
-        len_diff = abs(tlen - qlen) / max(tlen, qlen)
-        if len_diff > 0.20 and pident < 99.0:
-            print(f'{tid:<12} {template_chain:<20} {pident:>7.1f}% {qlen:>6} {tlen:>6}   SKIP (len diff {len_diff:.0%})')
+        # Skip only when template is LONGER than query by >20% (trimming loses structure)
+        # When template is shorter, padding with A-form is acceptable
+        if tlen > qlen * 1.20 and pident < 99.0:
+            len_diff = abs(tlen - qlen) / max(tlen, qlen)
+            print(f'{tid:<12} {template_chain:<20} {pident:>7.1f}% {qlen:>6} {tlen:>6}   SKIP (template too long {len_diff:.0%})')
             continue
 
         trimmed = align_and_trim(coords, qlen)
