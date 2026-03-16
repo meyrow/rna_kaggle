@@ -11,5 +11,5 @@
   "dataset_sources": [],
   "competition_sources": ["stanford-rna-3d-folding-2"],
   "kernel_sources": [],
-  "model_sources": []
+  "model_sources": ["shujun717/ribonanzanet2/pyTorch/alpha/1"]
 }

@@ -20,15 +20,17 @@ from pathlib import Path
 
 # ── Which src files become notebook cells (in order) ──────────────────────────
 SRC_CELLS = [
-    ("src/utils/sequence_utils.py", "Utils — sequence helpers"),
-    ("src/secondary_structure.py",  "Stage 1 — Secondary structure prediction"),
-    ("src/family_classifier.py",    "Stage 2 — Family classification (Rfam heuristic)"),
-    ("src/template_search.py",      "Stage 3 — Template search (MMseqs2 / PDB cache)"),
-    ("src/template_router.py",      "Stage 4 — Template router (TBM vs de novo)"),
-    ("src/structure_predictor.py",  "Stage 5 — Structure predictor (Protenix + RibonanzaNet2)"),
-    ("src/motif_corrector.py",      "Stage 6 — Motif correction (GNRA tetraloop, K-turn)"),
-    ("src/candidate_sampler.py",    "Stage 7 — Candidate sampling (5 seeds, pLDDT ranking)"),
-    ("src/submission.py",           "Output — Submission CSV builder"),
+    ("src/utils/sequence_utils.py",    "Utils — sequence helpers"),
+    ("src/secondary_structure.py",     "Stage 1 — Secondary structure prediction"),
+    ("src/family_classifier.py",       "Stage 2 — Family classification (Rfam heuristic)"),
+    ("src/template_search.py",         "Stage 3 — Template search (MMseqs2 / PDB cache)"),
+    ("src/template_router.py",         "Stage 4 — Template router (TBM vs de novo)"),
+    ("src/ribonanzanet2_encoder.py",   "Stage 5a — RibonanzaNet2 sequence encoder"),
+    ("src/rhofold_predictor.py",       "Stage 5b — RhoFold+ 3D predictor"),
+    ("src/structure_predictor.py",     "Stage 5c — Structure predictor orchestrator"),
+    ("src/motif_corrector.py",         "Stage 6 — Motif correction (GNRA tetraloop, K-turn)"),
+    ("src/candidate_sampler.py",       "Stage 7 — Candidate sampling (5 seeds, pLDDT ranking)"),
+    ("src/submission.py",              "Output — Submission CSV builder"),
 ]
 
 OUTPUT_NOTEBOOK = "notebook_submission.ipynb"
@@ -130,9 +132,20 @@ print(f'OUTPUT_DIR : {OUTPUT_DIR}')
 
     # ── Cell 2: Install dependencies ───────────────────────────────────────────
     deps_cell = textwrap.dedent("""\
-        # Install bioinformatics tools needed by the pipeline
-        # (These are pre-installed in many Kaggle environments; safe to run regardless)
+        # Install ViennaRNA — available on Kaggle even without internet
         import subprocess
+        try:
+            import RNA
+            print('  ViennaRNA Python: already installed')
+        except ImportError:
+            print('  Installing ViennaRNA...')
+            subprocess.run(['pip', 'install', 'viennarna', '-q',
+                           '--break-system-packages'], capture_output=True)
+            try:
+                import RNA
+                print('  ViennaRNA Python: installed OK')
+            except ImportError:
+                print('  ViennaRNA Python: install failed (RNAfold fallback active)')
 
         def install_if_missing(cmd_check: str, install_cmd: list):
             result = subprocess.run(["which", cmd_check], capture_output=True)
