@@ -1,6 +1,6 @@
 {
   "id": "ilanmeyrowitsch/notebook-ilan",
-  "title": "RNA 3D Folding - Hybrid TBM+DeNovo Pipeline",
+  "title": "notebook ilan",
   "code_file": "notebook_submission.ipynb",
   "language": "python",
   "kernel_type": "notebook",
