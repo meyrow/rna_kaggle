@@ -9,6 +9,8 @@ Runs all 28 test sequences through RhoFold and scores against validation_labels.
 """
 
 import sys, os, logging, time, yaml
+# Reduce CUDA memory fragmentation
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 from pathlib import Path
 
 # Add RhoFold repo to path BEFORE any imports
@@ -31,7 +33,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 cfg = {
-    'pipeline':   {'n_candidates': 5, 'device': 'cuda', 'chunk_length': 400,
+    'pipeline':   {'n_candidates': 5, 'device': 'cuda', 'chunk_length': 300,
                    'max_sequence_length': 6000,
                    'input_csv':  f'{DATA_DIR}/test_sequences.csv',
                    'output_csv': OUT_CSV},

@@ -94,6 +94,8 @@ class RhoFoldPredictor:
                 state = state["model"]
             model.load_state_dict(state, strict=True)
             model = model.to(self._device).eval()
+            if self._device == "cuda":
+                model = model.half()   # fp16 — halves VRAM from ~4GB to ~2GB
             for p in model.parameters():
                 p.requires_grad_(False)
 
@@ -151,12 +153,20 @@ class RhoFoldPredictor:
         tokens        = raw_tok.unsqueeze(1)  # (1, 1, L) 3D — MSAEmbedder
 
         # ── Forward pass ──────────────────────────────────────────────
+        # Clear cache before inference to avoid OOM on 8GB GPUs
+        if self._device == "cuda":
+            torch.cuda.empty_cache()
+
+        # Use fp16 autocast to halve activation memory
+        ctx = torch.autocast(device_type="cuda", dtype=torch.float16)               if self._device == "cuda" else torch.inference_mode()
+
         with torch.inference_mode():
-            output = self._model(
-                tokens=tokens,
-                rna_fm_tokens=rna_fm_tokens,   # 2D for RNA-FM
-                seq=seq_int,
-            )
+            with ctx:
+                output = self._model(
+                    tokens=tokens,
+                    rna_fm_tokens=rna_fm_tokens,
+                    seq=seq_int,
+                )
 
         # ── Extract C1' coordinates ─────────────────────────────────
         # output is a list of 10 dicts (recycle iterations) — take last
