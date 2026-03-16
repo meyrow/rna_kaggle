@@ -1,0 +1,11 @@
+[{
+  "name": "tRNA_test",
+  "sequences": [
+    {
+      "rnaSequence": {
+        "sequence": "GCGGAUUUAGCUCAGUUGGGAGAGCGCCAGACUGAAGAUCUGGAGGUCCUGUGUUCGAUCCACAGAAUUCGCA",
+        "count": 1
+      }
+    }
+  ]
+}]
