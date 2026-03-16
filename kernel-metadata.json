@@ -8,8 +8,15 @@
   "enable_gpu": true,
   "enable_tpu": false,
   "enable_internet": false,
-  "dataset_sources": ["ilanmeyrowitsch/rhofold-model"],
-  "competition_sources": ["stanford-rna-3d-folding-2"],
+  "dataset_sources": [
+    "ilanmeyrowitsch/rhofold-model",
+    "ilanmeyrowitsch/rna-templates"
+  ],
+  "competition_sources": [
+    "stanford-rna-3d-folding-2"
+  ],
   "kernel_sources": [],
-  "model_sources": ["shujun717/ribonanzanet2/pyTorch/alpha/1"]
+  "model_sources": [
+    "shujun717/ribonanzanet2/pyTorch/alpha/1"
+  ]
 }
