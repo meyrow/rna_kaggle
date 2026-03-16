@@ -51,6 +51,27 @@ def code_cell(source: str, label: str = "") -> dict:
     }
 
 
+
+def strip_src_imports(source: str) -> str:
+    """
+    Remove 'from src.xxx import yyy' and 'import src.xxx' lines.
+    When src/ files are inlined as notebook cells, all classes are
+    already defined in the notebook scope — cross-imports crash on Kaggle.
+    Also remove 'from src.utils.xxx import yyy' patterns.
+    """
+    lines = source.splitlines(keepends=True)
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        # Remove any from src. or import src. lines
+        if stripped.startswith("from src.") or stripped.startswith("import src."):
+            # Keep as comment so the intent is visible
+            cleaned.append("# " + line.rstrip() + "  # inlined above\n")
+        else:
+            cleaned.append(line)
+    return "".join(cleaned)
+
+
 def build_notebook():
     cells = []
 
@@ -171,7 +192,9 @@ def build_notebook():
             cells.append(code_cell(f"# {src_path} not found — cell skipped", label))
             continue
         source = p.read_text()
-        # Strip the module docstring marker from the first line (optional)
+        # Strip cross-imports (from src.xxx import yyy) — classes are already
+        # defined in earlier notebook cells, these imports crash on Kaggle
+        source = strip_src_imports(source)
         cells.append(code_cell(source, label))
         print(f"  Added cell: {label} ({len(source)} chars from {src_path})")
 
