@@ -2,27 +2,23 @@
 src/rhofold_predictor.py — RhoFold+ RNA 3D structure predictor.
 
 RhoFold+ (Nature Methods 2024) is a language-model-based RNA 3D predictor:
-  - Input:  sequence (+ optional MSA)
-  - Output: C1' coordinates for all residues
-  - Speed:  ~0.14s per sequence on GPU (much faster than AlphaFold-based methods)
-  - VRAM:   ~2-4GB for sequences up to 500nt — fits RTX 4060 and Kaggle P100
+  - Input:  sequence (single-sequence mode, no MSA required)
+  - Output: C1' coordinates for all residues + pLDDT confidence
+  - Speed:  ~0.14s per sequence on GPU
+  - VRAM:   ~2-4GB for sequences up to 500nt
 
-Available on Kaggle by adding to kernel-metadata.json:
-  "dataset_sources": ["ilanmeyrowitsch/rhofold-model"]
-  (after uploading the checkpoint as a Kaggle dataset)
+RhoFold forward API (from rhofold/rhofold.py):
+  model.forward(tokens, rna_fm_tokens, seq)
+  - tokens / rna_fm_tokens: shape (bs, msa_depth, L) — same for single-seq
+  - seq: list of residue-type ints (0=A, 1=C, 2=G, 3=U)
+  Output keys: 'cords' (C1' coords), 'plddt'
 
-Or install from: https://github.com/ml4bio/RhoFold
-
-On Kaggle P100 this is the most practical 3D predictor because:
-  1. Much lighter than Protenix (~200MB vs ~1.5GB checkpoint)
-  2. Fast enough to run 5 candidates × 28 sequences in < 30min
-  3. Pure inference — no training needed
-  4. Handles sequences up to 1000nt without chunking
+Checkpoint: https://huggingface.co/cuhkaih/rhofold/resolve/main/rhofold_pretrained_params.pt
+Repo:       https://github.com/ml4bio/RhoFold
 """
 
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -31,22 +27,23 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+NUC_TO_IDX = {"A": 0, "C": 1, "G": 2, "U": 3, "T": 3, "N": 0}
+
 # Checkpoint search paths
 RHOFOLD_CKPT_CANDIDATES = [
     "/kaggle/input/rhofold-model/rhofold_pretrained_params.pt",
-    "/kaggle/input/rhofold/rhofold_pretrained_params.pt",
+    "/kaggle/input/rhofold-model/RhoFold/pretrained/rhofold_pretrained_params.pt",
     "models/rhofold/rhofold_pretrained_params.pt",
     "/home/ilan/kaggle/data/models/rhofold/rhofold_pretrained_params.pt",
 ]
 RHOFOLD_REPO_CANDIDATES = [
     "/kaggle/input/rhofold-model/RhoFold",
-    "/kaggle/input/rhofold/RhoFold",
     "external/RhoFold",
     "/home/ilan/kaggle/data/external/RhoFold",
 ]
 
 
-def find_path(candidates: list[str]) -> Optional[str]:
+def find_path(candidates):
     for p in candidates:
         if os.path.exists(p):
             return p
@@ -54,151 +51,141 @@ def find_path(candidates: list[str]) -> Optional[str]:
 
 
 class RhoFoldPredictor:
-    """
-    Wrapper around RhoFold+ for RNA 3D structure prediction.
-
-    Produces C1' atom coordinates for each residue.
-    Falls back to the stub predictor if RhoFold is not available.
-    """
+    """RhoFold+ wrapper for RNA 3D structure prediction."""
 
     def __init__(self, cfg: Optional[dict] = None):
         cfg = cfg or {}
         self._ckpt_path = cfg.get("rhofold_checkpoint") or find_path(RHOFOLD_CKPT_CANDIDATES)
-        self._repo_path = cfg.get("rhofold_repo") or find_path(RHOFOLD_REPO_CANDIDATES)
-        self._model = None
-        self.available = False
+        self._repo_path = cfg.get("rhofold_repo")       or find_path(RHOFOLD_REPO_CANDIDATES)
+        self._model  = None
         self._device = "cpu"
+        self.available = False
         self._try_load()
 
     def _try_load(self):
         if not self._ckpt_path:
-            logger.info("RhoFold: checkpoint not found — will use stub predictor")
-            logger.info(f"  To enable: upload checkpoint to Kaggle dataset")
-            logger.info(f"  Expected: {RHOFOLD_CKPT_CANDIDATES[0]}")
+            logger.warning("RhoFold: checkpoint not found")
+            logger.warning(f"  Expected: {RHOFOLD_CKPT_CANDIDATES[0]}")
             return
 
-        if self._repo_path and self._repo_path not in sys.path:
-            sys.path.insert(0, self._repo_path)
+        # Add repo root to sys.path so 'import rhofold' works
+        if self._repo_path:
+            if self._repo_path not in sys.path:
+                sys.path.insert(0, self._repo_path)
+        else:
+            logger.warning("RhoFold: repo path not found")
+            logger.warning(f"  Expected: {RHOFOLD_REPO_CANDIDATES[0]}")
+            return
 
         try:
             import torch
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
-            # Try importing RhoFold
-            from rhofold.rhofold import RhoFold  # type: ignore
+            from rhofold.rhofold import RhoFold        # type: ignore
             from rhofold.config import rhofold_config  # type: ignore
 
             config = rhofold_config()
-            model = RhoFold(config)
+            model  = RhoFold(config)
+
             state = torch.load(self._ckpt_path, map_location="cpu", weights_only=False)
-            if "model" in state:
+            if isinstance(state, dict) and "model" in state:
                 state = state["model"]
             model.load_state_dict(state, strict=True)
             model = model.to(self._device).eval()
             for p in model.parameters():
                 p.requires_grad_(False)
 
-            self._model = model
+            self._model    = model
             self.available = True
-            logger.info(f"RhoFold+ loaded from {self._ckpt_path} on {self._device}")
+            logger.info(f"RhoFold+ ready on {self._device} ✓")
 
-        except ImportError:
-            logger.info("RhoFold not installed — using stub predictor")
-            logger.info("  Install: git clone https://github.com/ml4bio/RhoFold external/RhoFold")
         except Exception as e:
-            logger.warning(f"RhoFold load failed: {e}")
+            logger.warning(f"RhoFold load failed: {type(e).__name__}: {e}")
+            logger.warning(f"  ckpt : {self._ckpt_path}")
+            logger.warning(f"  repo : {self._repo_path}")
+
+    # ── Public API ──────────────────────────────────────────────────────
 
     def predict(
         self,
         sequence: str,
         seed: int = 42,
-        single_features: Optional[np.ndarray] = None,
-        pair_features: Optional[np.ndarray] = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
+        single_features=None,
+        pair_features=None,
+    ) -> tuple:
         """
         Predict C1' coordinates for an RNA sequence.
-
-        Args:
-            sequence: RNA sequence (A, C, G, U)
-            seed: random seed for reproducibility
-            single_features: (L, 256) from RibonanzaNet2 (optional)
-            pair_features: (L, L, 64) from RibonanzaNet2 (optional)
-
-        Returns:
-            c1_coords: (L, 3) float32
-            plddt:     (L,)   float32 confidence scores 0-100
+        Returns (c1_coords: (L,3) float32, plddt: (L,) float32).
         """
         if self._model is None or not self.available:
             return self._stub_predict(sequence, seed)
-
         try:
-            return self._rhofold_predict(sequence, seed, single_features, pair_features)
+            return self._rhofold_predict(sequence, seed)
         except Exception as e:
-            logger.warning(f"RhoFold inference failed for len={len(sequence)}: {e}")
+            logger.warning(f"RhoFold inference failed (len={len(sequence)}): {e}")
             return self._stub_predict(sequence, seed)
 
-    def _rhofold_predict(
-        self, sequence, seed, single_features, pair_features
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Run actual RhoFold+ inference."""
+    # ── Internal ────────────────────────────────────────────────────────
+
+    def _rhofold_predict(self, sequence: str, seed: int):
         import torch
         torch.manual_seed(seed)
-
         L = len(sequence)
 
-        # RhoFold uses RNA-FM tokenisation via its own alphabet
+        # ── Tokenise ──────────────────────────────────────────────────
+        # Try RNA-FM alphabet first; fall back to manual token IDs
         try:
             from rhofold.utils.alphabet import get_raw_alphabet  # type: ignore
             alphabet = get_raw_alphabet()
-            batch_converter = alphabet.get_batch_converter()
-            _, _, tokens = batch_converter([("seq", sequence)])
-            tokens = tokens.to(self._device)
+            _, _, tok = alphabet.get_batch_converter()([("seq", sequence)])
+            tokens = tok.to(self._device)   # (1, L+2)
         except Exception:
-            # Fallback: simple integer encoding
-            nuc_map = {"A": 5, "C": 6, "G": 7, "U": 8, "T": 8, "N": 5}
-            tokens = torch.tensor(
-                [[1] + [nuc_map.get(c.upper(), 5) for c in sequence] + [2]],
-                dtype=torch.long, device=self._device
-            )
+            # RNA-FM token IDs: BOS=1, A=5, C=6, G=7, U=8, EOS=2
+            nuc = {"A": 5, "C": 6, "G": 7, "U": 8, "T": 8, "N": 5}
+            ids = [1] + [nuc.get(c.upper(), 5) for c in sequence] + [2]
+            tokens = torch.tensor([ids], dtype=torch.long, device=self._device)
 
+        # seq: residue-type integers 0-3 (used by structure_module)
+        seq_int = [NUC_TO_IDX.get(c.upper(), 0) for c in sequence]
+
+        # Expand to (bs=1, msa_depth=1, L) as expected by MSAEmbedder
+        if tokens.dim() == 2:
+            tokens = tokens.unsqueeze(1)   # (1, 1, L)
+
+        # ── Forward pass ──────────────────────────────────────────────
         with torch.inference_mode():
             output = self._model(
                 tokens=tokens,
-                rna_fm_tokens=tokens,
+                rna_fm_tokens=tokens,   # single-seq: same as tokens
+                seq=seq_int,
             )
 
-        # Extract C1' coordinates
-        # RhoFold output dict contains 'cord_tns_pred' and 'plddt_tns'
-        if isinstance(output, dict):
-            # Try known output keys from RhoFold source
-            coords = (output.get("cord_tns_pred")   # list of tensors per layer
-                   or output.get("coords")
-                   or output.get("positions"))
-            plddt_out = output.get("plddt_tns") or output.get("plddt")
-        elif isinstance(output, (list, tuple)):
-            coords   = output[0]
-            plddt_out = output[1] if len(output) > 1 else None
-        else:
-            coords = output
-            plddt_out = None
+        # ── Extract C1' coordinates ───────────────────────────────────
+        cords = None
+        for key in ("cords", "cord", "coordinates", "positions"):
+            if key in output:
+                cords = output[key]
+                break
 
-        # cord_tns_pred is a list — take last element (final layer)
-        if isinstance(coords, list):
-            coords = coords[-1]
+        if cords is None:
+            logger.warning(f"RhoFold output keys: {list(output.keys())}")
+            return self._stub_predict(sequence, seed)
 
-        c = coords.squeeze(0).cpu().float().numpy()  # (L, 3) or (L, atoms, 3)
+        c = cords.squeeze(0).cpu().float().numpy()   # (L, atoms, 3) or (L, 3)
         if c.ndim == 3:
-            # RNA atom order: P, C4', N, C1' ...
-            # C1' is typically index 3 in RhoFold; try index 3 first
+            # RhoFold atom ordering (from structure_module):
+            # [P, C4', N1/N9, C1', C2', O2', O3', O4', O5', OP1, OP2, C5', C3']
+            # C1' = index 3
             c1 = c[:, 3, :] if c.shape[1] > 3 else c[:, 0, :]
         else:
             c1 = c
 
+        # ── Extract pLDDT ─────────────────────────────────────────────
+        plddt_out = output.get("plddt")
         if plddt_out is not None:
-            p = plddt_out.squeeze(0).cpu().float().numpy()
+            p = plddt_out.squeeze().cpu().float().numpy()
             if p.ndim > 1:
-                p = p.mean(axis=-1)
-            # RhoFold pLDDT is already 0-1 → scale to 0-100
+                p = p.mean(-1)
             if p.max() <= 1.0:
                 p = p * 100.0
         else:
@@ -206,16 +193,12 @@ class RhoFoldPredictor:
 
         return c1.astype(np.float32)[:L], p.astype(np.float32)[:L]
 
-    def _stub_predict(self, sequence: str, seed: int) -> tuple[np.ndarray, np.ndarray]:
-        """Fallback: idealized A-form helix geometry with per-seed noise."""
+    def _stub_predict(self, sequence: str, seed: int):
+        """A-form helix placeholder — used when RhoFold is unavailable."""
         rng = np.random.default_rng(seed)
-        n = len(sequence)
-        t = np.linspace(0, n * 0.6, n)
-        coords = np.stack([
-            9.0 * np.cos(t),
-            9.0 * np.sin(t),
-            2.8 * np.arange(n),
-        ], axis=1).astype(np.float32)
-        coords += rng.normal(0, 0.5, coords.shape).astype(np.float32)
-        plddt = rng.uniform(40, 80, n).astype(np.float32)
-        return coords, plddt
+        n   = len(sequence)
+        t   = np.linspace(0, n * 0.6, n)
+        c   = np.stack([9.0*np.cos(t), 9.0*np.sin(t), 2.8*np.arange(n)], axis=1)
+        c   = (c + rng.normal(0, 0.5, c.shape)).astype(np.float32)
+        p   = rng.uniform(40, 80, n).astype(np.float32)
+        return c, p
