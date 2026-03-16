@@ -156,34 +156,32 @@ class RhoFoldPredictor:
                 seq=seq_int,
             )
 
-        # ── Extract C1' coordinates ───────────────────────────────────
-        # forward() collects outputs across recycle iterations → list of dicts
-        # Take the last element (final prediction)
+        # ── Extract C1' coordinates ─────────────────────────────────
+        # output is a list of 10 dicts (recycle iterations) — take last
         if isinstance(output, list):
             output = output[-1]
 
-        if isinstance(output, dict):
-            # structure_module stores coords in 'cord_tns_pred' (list of tensors)
-            cords = output.get("cord_tns_pred") or output.get("cords") or output.get("cord")
-        else:
-            # Unexpected type — print for debugging
-            logger.warning(f"Unexpected output type: {type(output)}: {output}")
+        if not isinstance(output, dict):
+            logger.warning(f"Unexpected output type: {type(output)}")
             return self._stub_predict(sequence, seed)
 
-        if cords is None:
-            logger.warning(f"RhoFold output keys: {list(output.keys())}")
-            return self._stub_predict(sequence, seed)
-
-        # cord_tns_pred is a list of tensors (one per recycle layer) — take last
-        if isinstance(cords, list):
-            cords = cords[-1]
-
-        c = cords.squeeze(0).cpu().float().numpy()   # (L, atoms, 3) or (L, 3)
-        if c.ndim == 3:
-            # RhoFold atom ordering: [P, C4', N1/N9, C1', ...]  C1' = index 3
-            c1 = c[:, 3, :] if c.shape[1] > 3 else c[:, 0, :]
+        # Use "cords_c1'" key — shape (1, L, 3), direct C1' atom coords
+        raw_key = "cords_c1'"
+        cords_c1 = output.get(raw_key)
+        if cords_c1 is not None:
+            if isinstance(cords_c1, list):
+                cords_c1 = cords_c1[-1]
+            c1 = cords_c1.squeeze(0).cpu().float().numpy()  # (L, 3)
         else:
-            c1 = c
+            # Fallback: cord_tns_pred has all atoms; C1' at index 3
+            cords = output.get("cord_tns_pred")
+            if isinstance(cords, list):
+                cords = cords[-1]
+            if cords is None:
+                logger.warning(f"No coords found. Keys: {list(output.keys())}")
+                return self._stub_predict(sequence, seed)
+            c = cords.squeeze(0).cpu().float().numpy()
+            c1 = c[:, 3, :] if (c.ndim == 3 and c.shape[1] > 3) else c
 
         # ── Extract pLDDT ─────────────────────────────────────────────
         plddt_out = output.get("plddt") if isinstance(output, dict) else None
