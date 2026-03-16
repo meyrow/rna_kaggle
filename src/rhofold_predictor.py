@@ -132,34 +132,21 @@ class RhoFoldPredictor:
         torch.manual_seed(seed)
         L = len(sequence)
 
-        # ── Tokenise ──────────────────────────────────────────────────
-        # Try RNA-FM alphabet first; fall back to manual token IDs
-        try:
-            from rhofold.utils.alphabet import get_raw_alphabet  # type: ignore
-            alphabet = get_raw_alphabet()
-            _, _, tok = alphabet.get_batch_converter()([("seq", sequence)])
-            tokens = tok.to(self._device)   # (1, L+2)
-        except Exception:
-            # RNA-FM token IDs: BOS=1, A=5, C=6, G=7, U=8, EOS=2
-            nuc = {"A": 5, "C": 6, "G": 7, "U": 8, "T": 8, "N": 5}
-            ids = [1] + [nuc.get(c.upper(), 5) for c in sequence] + [2]
-            tokens = torch.tensor([ids], dtype=torch.long, device=self._device)
+        # ── Tokenise (no BOS/EOS — both tensors must be length L) ──────
+        # embedders.py: torch.cat([rna_fm_output, msa_fea], dim=-1)
+        # rna_fm output length == rna_fm_tokens length
+        # msa_fea length == tokens length (stripped)
+        # → both must be L, no BOS/EOS padding
 
-        # seq: residue-type integers 0-3 (used by structure_module)
         seq_int = [NUC_TO_IDX.get(c.upper(), 0) for c in sequence]
 
-        # RNA-FM tokeniser adds BOS (1) and EOS (2) tokens.
-        # rna_fm_tokens: (bs=1, L+2) — RNA-FM model needs BOS/EOS, expects 2D
-        # tokens:        (bs=1, msa_depth=1, L) — structure_module needs raw seq only
-        # Strip BOS/EOS from tokens so length matches seq_int (L, not L+2)
-        rna_fm_tokens = tokens.squeeze(1) if tokens.dim() == 3 else tokens  # keep BOS/EOS
-        if tokens.dim() == 2:
-            tokens_inner = tokens[:, 1:-1]           # strip BOS/EOS → (1, L)
-        else:
-            tokens_inner = tokens[:, :, 1:-1]        # strip BOS/EOS → (1, msa, L)
-        if tokens_inner.dim() == 2:
-            tokens_inner = tokens_inner.unsqueeze(1)  # → (1, 1, L)
-        tokens = tokens_inner
+        # RNA-FM token IDs without BOS/EOS: A=5, C=6, G=7, U=8
+        nuc_fm = {"A": 5, "C": 6, "G": 7, "U": 8, "T": 8, "N": 5}
+        raw_ids = [nuc_fm.get(c.upper(), 5) for c in sequence]   # length L
+        raw_tok = torch.tensor([raw_ids], dtype=torch.long, device=self._device)
+
+        rna_fm_tokens = raw_tok            # (1, L)   2D — RNA-FM model
+        tokens        = raw_tok.unsqueeze(1)  # (1, 1, L) 3D — MSAEmbedder
 
         # ── Forward pass ──────────────────────────────────────────────
         with torch.inference_mode():
