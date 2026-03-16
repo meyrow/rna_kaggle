@@ -95,7 +95,15 @@ class RhoFoldPredictor:
             model.load_state_dict(state, strict=True)
             model = model.to(self._device).eval()
             if self._device == "cuda":
-                model = model.half()   # fp16 — halves VRAM from ~4GB to ~2GB
+                # Use fp16 only on GPUs with <12GB VRAM (RTX 4060=8GB)
+                # Kaggle P100 has 16GB — can use full fp32 for better precision
+                import torch as _t
+                vram_gb = _t.cuda.get_device_properties(0).total_memory / 1024**3
+                if vram_gb < 12:
+                    model = model.half()
+                    logger.info(f"  fp16 mode (VRAM={vram_gb:.1f}GB)")
+                else:
+                    logger.info(f"  fp32 mode (VRAM={vram_gb:.1f}GB)")
             for p in model.parameters():
                 p.requires_grad_(False)
 
