@@ -63,18 +63,27 @@ class TemplateSearcher:
 
     def __init__(self, cfg: dict):
         self.enabled = cfg.get("enabled", True)
-        self.mmseqs2_db = cfg.get("mmseqs2_db", "data/pdb_cache/pdb_rna_mmseqs2")
+        self.mmseqs2_db = cfg.get("mmseqs2_db", "data/pdb_cache/pdb_rna_db")
         self.pdb_c1_cache = cfg.get("pdb_c1_cache", "data/pdb_cache/pdb_c1_coords.pkl")
         self.max_templates = cfg.get("max_templates", 10)
         self.min_seq_identity = cfg.get("min_seq_identity", 0.25)
         self.min_coverage = cfg.get("min_coverage", 0.5)
 
+        self._mmseqs_cmd = "mmseqs"
         self._mmseqs2_available = self._check_mmseqs2()
         self._c1_cache = self._load_c1_cache()
 
     def _check_mmseqs2(self) -> bool:
         try:
-            r = subprocess.run(["mmseqs", "version"], capture_output=True, timeout=5)
+            for cmd in ["mmseqs", "mmseqs-avx2", "mmseqs-sse4.1"]:
+                try:
+                    r = subprocess.run([cmd, "version"], capture_output=True, timeout=5)
+                    if r.returncode == 0:
+                        self._mmseqs_cmd = cmd
+                        return True
+                except FileNotFoundError:
+                    continue
+            r = type('r', (), {'returncode': 1})()
             return r.returncode == 0
         except FileNotFoundError:
             logger.warning("MMseqs2 not found. Template search disabled.")
@@ -148,7 +157,7 @@ class TemplateSearcher:
                 f.write(f">query\n{sequence}\n")
 
             cmd = [
-                "mmseqs", "easy-search",
+                self._mmseqs_cmd, "easy-search",
                 query_fa, self.mmseqs2_db, result_tsv, tmp_mmseqs,
                 "--format-output",
                 "query,target,pident,alnlen,qstart,qend,tstart,tend,evalue,bits,qaln,taln",
