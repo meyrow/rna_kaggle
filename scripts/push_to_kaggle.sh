@@ -1,51 +1,55 @@
 #!/usr/bin/env bash
 # scripts/push_to_kaggle.sh
-# Push notebook to Kaggle + push code to GitHub
-# Run from project root: bash scripts/push_to_kaggle.sh
+# Regenerate notebook → push to Kaggle + GitHub
+#
+# Requires env vars (set in ~/.bashrc or export before running):
+#   export KAGGLE_API_TOKEN="KGAT_..."
+#   export GITHUB_TOKEN="github_pat_..."
+#
+# Usage: bash scripts/push_to_kaggle.sh [commit message]
 
 set -euo pipefail
-CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+
+MSG="${1:-Update notebook: $(date '+%Y-%m-%d %H:%M')}"
+
+# ── Check env vars ─────────────────────────────────────────────────
+[[ -z "${KAGGLE_API_TOKEN:-}" ]] && { echo -e "${RED}ERROR: KAGGLE_API_TOKEN not set${NC}"; exit 1; }
+[[ -z "${GITHUB_TOKEN:-}" ]]    && { echo -e "${RED}ERROR: GITHUB_TOKEN not set${NC}"; exit 1; }
 
 KAGGLE_USER="ilanmeyrowitsch"
-KAGGLE_TOKEN="KGAT_207e7902a35c74689a20eb11f5606eba"
 NOTEBOOK_ID="${KAGGLE_USER}/notebook-ilan"
 
-echo -e "${CYAN}=== RNA 3D Folding — Push to Kaggle ===${NC}"
+echo -e "${CYAN}=== RNA 3D Folding — Push to Kaggle + GitHub ===${NC}"
 
-# ── 1. Set up Kaggle credentials ───────────────────────────────────
-echo -e "\n${CYAN}[1/4] Setting up Kaggle credentials...${NC}"
+# ── 1. Kaggle credentials ──────────────────────────────────────────
+echo -e "\n${CYAN}[1/5] Kaggle credentials...${NC}"
 mkdir -p ~/.kaggle
-echo "{\"username\":\"${KAGGLE_USER}\",\"key\":\"${KAGGLE_TOKEN}\"}" > ~/.kaggle/kaggle.json
+echo "{\"username\":\"${KAGGLE_USER}\",\"key\":\"${KAGGLE_API_TOKEN}\"}" > ~/.kaggle/kaggle.json
 chmod 600 ~/.kaggle/kaggle.json
+python3 -c "import kaggle" 2>/dev/null || pip install kaggle -q
 
-# Verify
-kaggle config view 2>/dev/null || echo "kaggle not installed — run: pip install kaggle"
-python3 -c "import kaggle; print('  Kaggle package: OK')" 2>/dev/null || \
-    pip install kaggle --quiet
-
-# ── 2. Regenerate notebook from latest src/ ────────────────────────
-echo -e "\n${CYAN}[2/4] Regenerating notebook from src/...${NC}"
+# ── 2. Regenerate notebook ─────────────────────────────────────────
+echo -e "\n${CYAN}[2/5] Regenerating notebook from src/...${NC}"
 python3 build_notebook.py
 
-# ── 3. Push notebook to Kaggle ─────────────────────────────────────
-echo -e "\n${CYAN}[3/4] Pushing notebook to Kaggle...${NC}"
-echo "  Notebook: ${NOTEBOOK_ID}"
+# ── 3. Push to Kaggle ──────────────────────────────────────────────
+echo -e "\n${CYAN}[3/5] Pushing notebook to Kaggle...${NC}"
+kaggle kernels push -p .
+echo -e "  ${GREEN}✓${NC} https://www.kaggle.com/code/${NOTEBOOK_ID}"
 
-# kernel-metadata.json must be in same dir as notebook
-kaggle kernels push -p . 2>&1
+# ── 4. Run tests ───────────────────────────────────────────────────
+echo -e "\n${CYAN}[4/5] Running tests...${NC}"
+python3 -m pytest tests/ -q
 
-echo -e "${GREEN}  Notebook pushed!${NC}"
-echo "  View at: https://www.kaggle.com/code/${NOTEBOOK_ID}"
+# ── 5. Push to GitHub ──────────────────────────────────────────────
+echo -e "\n${CYAN}[5/5] Pushing to GitHub...${NC}"
+git remote set-url origin "https://${GITHUB_TOKEN}@github.com/meyrow/rna_kaggle.git"
+git add -A
+git diff --staged --quiet || git commit -m "${MSG}"
+git push origin main
+echo -e "  ${GREEN}✓${NC} https://github.com/meyrow/rna_kaggle"
 
-# ── 4. Check notebook status ───────────────────────────────────────
-echo -e "\n${CYAN}[4/4] Checking notebook status...${NC}"
-sleep 3
-kaggle kernels status "${NOTEBOOK_ID}" 2>&1 || true
-
-echo -e "\n${GREEN}=== Done ===${NC}"
-echo ""
-echo "Next:"
-echo "  Watch run:    kaggle kernels status ${NOTEBOOK_ID}"
-echo "  Pull output:  kaggle kernels output ${NOTEBOOK_ID} -p outputs/"
-echo "  Submit:       kaggle competitions submit stanford-rna-3d-folding-2 \\"
-echo "                  -f outputs/submission.csv -m 'Hybrid TBM+DeNovo pipeline'"
+echo -e "\n${GREEN}=== Done! ===${NC}"
+echo "Watch run:    kaggle kernels status ${NOTEBOOK_ID}"
+echo "Submit later: bash scripts/submit_competition.sh"

@@ -48,3 +48,6 @@ Thumbs.db
 
 # pytest
 .pytest_cache/
+
+# Local secrets — never commit
+scripts/set_tokens.sh
