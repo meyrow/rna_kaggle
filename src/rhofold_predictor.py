@@ -85,7 +85,7 @@ class RhoFoldPredictor:
             self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
             # Try importing RhoFold
-            from rhofold.model.rhofold import RhoFold  # type: ignore
+            from rhofold.rhofold import RhoFold  # type: ignore
             from rhofold.config import rhofold_config  # type: ignore
 
             config = rhofold_config()
@@ -145,42 +145,62 @@ class RhoFoldPredictor:
         torch.manual_seed(seed)
 
         L = len(sequence)
-        nuc_map = {"A": 0, "C": 1, "G": 2, "U": 3, "T": 3, "N": 0}
-        tokens = torch.tensor(
-            [[nuc_map.get(c.upper(), 0) for c in sequence]],
-            dtype=torch.long, device=self._device
-        )
+
+        # RhoFold uses RNA-FM tokenisation via its own alphabet
+        try:
+            from rhofold.utils.alphabet import get_raw_alphabet  # type: ignore
+            alphabet = get_raw_alphabet()
+            batch_converter = alphabet.get_batch_converter()
+            _, _, tokens = batch_converter([("seq", sequence)])
+            tokens = tokens.to(self._device)
+        except Exception:
+            # Fallback: simple integer encoding
+            nuc_map = {"A": 5, "C": 6, "G": 7, "U": 8, "T": 8, "N": 5}
+            tokens = torch.tensor(
+                [[1] + [nuc_map.get(c.upper(), 5) for c in sequence] + [2]],
+                dtype=torch.long, device=self._device
+            )
 
         with torch.inference_mode():
             output = self._model(
                 tokens=tokens,
-                rna_fm_tokens=tokens,  # RhoFold uses same tokenisation
+                rna_fm_tokens=tokens,
             )
 
-        # Extract C1' coordinates — RhoFold outputs all-atom or C1' only
+        # Extract C1' coordinates
+        # RhoFold output dict contains 'cord_tns_pred' and 'plddt_tns'
         if isinstance(output, dict):
-            coords = output.get("frames", output.get("positions", output.get("coords")))
-            plddt  = output.get("plddt", output.get("confidence", None))
+            # Try known output keys from RhoFold source
+            coords = (output.get("cord_tns_pred")   # list of tensors per layer
+                   or output.get("coords")
+                   or output.get("positions"))
+            plddt_out = output.get("plddt_tns") or output.get("plddt")
         elif isinstance(output, (list, tuple)):
-            coords, plddt = output[0], output[1] if len(output) > 1 else None
+            coords   = output[0]
+            plddt_out = output[1] if len(output) > 1 else None
         else:
             coords = output
-            plddt  = None
+            plddt_out = None
 
-        # Extract C1' from coords: shape varies by model version
-        c = coords[0].cpu().float().numpy()
+        # cord_tns_pred is a list — take last element (final layer)
+        if isinstance(coords, list):
+            coords = coords[-1]
+
+        c = coords.squeeze(0).cpu().float().numpy()  # (L, 3) or (L, atoms, 3)
         if c.ndim == 3:
-            # (L, atoms, 3) — take C1' atom (index 1 in RNA atom ordering)
-            c1 = c[:, 1, :] if c.shape[1] > 1 else c[:, 0, :]
+            # RNA atom order: P, C4', N, C1' ...
+            # C1' is typically index 3 in RhoFold; try index 3 first
+            c1 = c[:, 3, :] if c.shape[1] > 3 else c[:, 0, :]
         else:
-            # (L, 3) already
             c1 = c
 
-        if plddt is not None:
-            p = plddt[0].cpu().float().numpy()
+        if plddt_out is not None:
+            p = plddt_out.squeeze(0).cpu().float().numpy()
             if p.ndim > 1:
                 p = p.mean(axis=-1)
-            p = p * 100.0  # normalise to 0-100
+            # RhoFold pLDDT is already 0-1 → scale to 0-100
+            if p.max() <= 1.0:
+                p = p * 100.0
         else:
             p = np.full(L, 70.0, dtype=np.float32)
 
