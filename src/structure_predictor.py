@@ -142,7 +142,7 @@ class StructurePredictor:
         else:
             c1, plddt = self._predict_single(sequence, seed, single_feat, pair_feat)
 
-        return PredictedStructure(
+        struct = PredictedStructure(
             target_id=target_id,
             sequence=sequence,
             c1_coords=c1,
@@ -152,6 +152,10 @@ class StructurePredictor:
             branch=branch,
             n_templates_used=len(templates),
         )
+        # Clear prediction cache after last seed to free memory
+        if seed == 1337 and hasattr(self, "_pred_cache"):
+            self._pred_cache.clear()
+        return struct
 
     def _encode_sequence(self, sequence: str):
         """Encode with RibonanzaNet2 or fall back to one-hot."""
@@ -172,8 +176,17 @@ class StructurePredictor:
     def _predict_single(self, sequence, seed, single_feat, pair_feat):
         """Predict full sequence in one pass."""
         if self._active_backend == "rhofold" and self._rhofold:
-            return self._rhofold.predict(sequence, seed, single_feat, pair_feat)
-        # Stub fallback
+            # RhoFold is deterministic — seed has no effect on transformer output
+            # Use cached result if available for this sequence
+            cache_key = (sequence, "rhofold")
+            if hasattr(self, "_pred_cache") and cache_key in self._pred_cache:
+                return self._pred_cache[cache_key]
+            result = self._rhofold.predict(sequence, seed, single_feat, pair_feat)
+            if not hasattr(self, "_pred_cache"):
+                self._pred_cache = {}
+            self._pred_cache[cache_key] = result
+            return result
+        # Stub fallback (stochastic — seed matters)
         return self._stub_predict(sequence, seed)
 
     def _predict_chunked(self, sequence, seed, single_feat):

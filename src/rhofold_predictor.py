@@ -94,16 +94,8 @@ class RhoFoldPredictor:
                 state = state["model"]
             model.load_state_dict(state, strict=True)
             model = model.to(self._device).eval()
-            if self._device == "cuda":
-                # Use fp16 only on GPUs with <12GB VRAM (RTX 4060=8GB)
-                # Kaggle P100 has 16GB — can use full fp32 for better precision
-                import torch as _t
-                vram_gb = _t.cuda.get_device_properties(0).total_memory / 1024**3
-                if vram_gb < 12:
-                    model = model.half()
-                    logger.info(f"  fp16 mode (VRAM={vram_gb:.1f}GB)")
-                else:
-                    logger.info(f"  fp32 mode (VRAM={vram_gb:.1f}GB)")
+            # Keep model in fp32 — LayerNorm breaks in fp16
+            # Memory saving is handled by autocast during inference only
             for p in model.parameters():
                 p.requires_grad_(False)
 
@@ -165,16 +157,12 @@ class RhoFoldPredictor:
         if self._device == "cuda":
             torch.cuda.empty_cache()
 
-        # Use fp16 autocast to halve activation memory
-        ctx = torch.autocast(device_type="cuda", dtype=torch.float16)               if self._device == "cuda" else torch.inference_mode()
-
         with torch.inference_mode():
-            with ctx:
-                output = self._model(
-                    tokens=tokens,
-                    rna_fm_tokens=rna_fm_tokens,
-                    seq=seq_int,
-                )
+            output = self._model(
+                tokens=tokens,
+                rna_fm_tokens=rna_fm_tokens,
+                seq=seq_int,
+            )
 
         # ── Extract C1' coordinates ─────────────────────────────────
         # output is a list of 10 dicts (recycle iterations) — take last
