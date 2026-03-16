@@ -84,7 +84,7 @@ class RhoFoldPredictor:
             from rhofold.rhofold import RhoFold        # type: ignore
             from rhofold.config import rhofold_config  # type: ignore
 
-            config = rhofold_config()
+            config = rhofold_config  # ConfigDict, not callable
             model  = RhoFold(config)
 
             state = torch.load(self._ckpt_path, map_location="cpu", weights_only=False)
