@@ -68,6 +68,15 @@ class SecondaryStructurePredictor:
         self._viennarna_available = self._check_viennarna()
 
     def _check_viennarna(self) -> bool:
+        # Try Python API first (faster, no subprocess overhead)
+        try:
+            import RNA as _RNA
+            self._rna_module = _RNA
+            logger.info("ViennaRNA Python API available ✓")
+            return True
+        except ImportError:
+            self._rna_module = None
+        # Fall back to subprocess RNAfold binary
         try:
             result = subprocess.run(
                 ["RNAfold", "--version"],
@@ -86,8 +95,31 @@ class SecondaryStructurePredictor:
             logger.warning(f"Engine '{self.engine}' unavailable. Using fallback.")
             return self._predict_fallback(sequence)
 
+
+    def _predict_viennarna_api(self, sequence: str) -> "SecondaryStructure":
+        """Use ViennaRNA Python API directly — faster than subprocess."""
+        try:
+            RNA = self._rna_module
+            md = RNA.md()
+            md.temperature = self.temperature
+            fc = RNA.fold_compound(sequence, md)
+            structure, mfe = fc.mfe()
+            return SecondaryStructure(
+                sequence=sequence,
+                dot_bracket=structure,
+                free_energy=mfe,
+                engine="viennarna_api",
+            )
+        except Exception as e:
+            logger.warning(f"ViennaRNA API failed: {e}")
+            return self._fallback_predict(sequence)
+
     def _predict_viennarna(self, sequence: str) -> SecondaryStructure:
-        """Call RNAfold subprocess and parse output."""
+        """Predict secondary structure using ViennaRNA Python API or subprocess."""
+        # Use Python API if available (much faster)
+        if hasattr(self, '_rna_module') and self._rna_module is not None:
+            return self._predict_viennarna_api(sequence)
+        # Fall back to subprocess
         cmd = ["RNAfold", "--noPS", f"--temp={self.temperature}"]
         if self.use_pseudoknot:
             cmd.append("--gquad")  # G-quadruplex support

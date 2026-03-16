@@ -233,3 +233,17 @@ class ProtenixPredictor:
         t = np.linspace(0, n * 0.6, n)
         c = np.stack([9.0*np.cos(t), 9.0*np.sin(t), 2.8*np.arange(n)], axis=1)
         return (c + rng.normal(0, 0.5, c.shape)).astype(np.float32)
+
+
+def find_template_features(data_dir: str) -> Optional[str]:
+    """Find pre-computed template features file."""
+    candidates = [
+        f"{data_dir}/template_features.pt",
+        f"{data_dir}/kaggle/template_features.pt",
+        "/kaggle/input/competitions/stanford-rna-3d-folding-2/template_features.pt",
+        "/home/ilan/kaggle/data/template_features.pt",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
