@@ -194,8 +194,11 @@ class RhoFoldPredictor:
             p = plddt_out.squeeze().cpu().float().numpy()
             if p.ndim > 1:
                 p = p.mean(-1)
+            p = np.atleast_1d(p)  # handle 0-d scalar
             if p.max() <= 1.0:
                 p = p * 100.0
+            if p.shape[0] == 1:
+                p = np.repeat(p, L)  # broadcast scalar to per-residue
         else:
             p = np.full(L, 70.0, dtype=np.float32)
 
