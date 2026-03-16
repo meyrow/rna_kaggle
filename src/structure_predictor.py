@@ -87,25 +87,26 @@ class StructurePredictor:
             logger.info(f"StructurePredictor: RibonanzaNet2 skip ({e})")
             self._rn2 = None
 
-        # ── RhoFold+ (fast 3D predictor) ─────────────────────────────
+        # ── Protenix (AlphaFold3-based, highest quality) ─────────────
         try:
-            from src.rhofold_predictor import RhoFoldPredictor  # inlined above
+            from src.protenix_predictor import ProtenixPredictor
+            self._protenix_pred = ProtenixPredictor(self.protenix_cfg)
+            if self._protenix_pred.available:
+                self._active_backend = "protenix"
+                logger.info("StructurePredictor: Protenix backend READY")
+        except Exception as e:
+            logger.info(f"StructurePredictor: Protenix skip ({e})")
+            self._protenix_pred = None
+
+        # ── RhoFold+ (fallback) ───────────────────────────────────────
+        try:
+            from src.rhofold_predictor import RhoFoldPredictor
             self._rhofold = RhoFoldPredictor(self.protenix_cfg)
-            if self._rhofold.available:
+            if self._rhofold.available and self._active_backend is None:
                 self._active_backend = "rhofold"
                 logger.info("StructurePredictor: RhoFold+ backend READY")
         except Exception as e:
             logger.info(f"StructurePredictor: RhoFold skip ({e})")
-
-        # ── Protenix (high-quality but heavy) ───────────────────────
-        ckpt = self.protenix_cfg.get("checkpoint", "")
-        if Path(ckpt).exists():
-            try:
-                # import deferred — Protenix has heavy deps
-                self._active_backend = self._active_backend or "protenix"
-                logger.info(f"StructurePredictor: Protenix checkpoint found at {ckpt}")
-            except Exception as e:
-                logger.warning(f"StructurePredictor: Protenix error ({e})")
 
         if self._active_backend is None:
             self._active_backend = "stub"
@@ -175,9 +176,14 @@ class StructurePredictor:
 
     def _predict_single(self, sequence, seed, single_feat, pair_feat):
         """Predict full sequence in one pass."""
+        if self._active_backend == "protenix" and hasattr(self, "_protenix_pred") and self._protenix_pred:
+            # Protenix is stochastic (diffusion) — different seeds give different structures
+            # Use target_id from sequence hash as a stable name
+            import hashlib
+            tgt_id = "seq_" + hashlib.md5(sequence.encode()).hexdigest()[:8]
+            return self._protenix_pred.predict(sequence, tgt_id, seed=seed)
         if self._active_backend == "rhofold" and self._rhofold:
-            # RhoFold is deterministic — seed has no effect on transformer output
-            # Use cached result if available for this sequence
+            # RhoFold is deterministic — cache results
             cache_key = (sequence, "rhofold")
             if hasattr(self, "_pred_cache") and cache_key in self._pred_cache:
                 return self._pred_cache[cache_key]
@@ -186,7 +192,7 @@ class StructurePredictor:
                 self._pred_cache = {}
             self._pred_cache[cache_key] = result
             return result
-        # Stub fallback (stochastic — seed matters)
+        # Stub fallback
         return self._stub_predict(sequence, seed)
 
     def _predict_chunked(self, sequence, seed, single_feat):
