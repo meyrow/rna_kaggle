@@ -1,0 +1,53 @@
+# RNA 3D Folding Pipeline — Python dependencies
+# Tested on Ubuntu 22.04/24.04, Python 3.10+, CUDA 12.1+
+
+# ── Core scientific stack ──────────────────────────────────────────
+numpy>=1.26.0
+pandas>=2.1.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+
+# ── Deep learning ─────────────────────────────────────────────────
+torch>=2.2.0          # install manually with CUDA: see setup.sh
+# torchvision not required
+
+# ── Bioinformatics ────────────────────────────────────────────────
+biopython>=1.81       # PDB parsing, sequence utils
+# ViennaRNA Python bindings (installed via conda, see setup.sh)
+# RNA>=2.6.0          # pip install viennarna (if available for your platform)
+
+# ── Config / IO ───────────────────────────────────────────────────
+pyyaml>=6.0
+omegaconf>=2.3.0
+tqdm>=4.66.0
+rich>=13.0.0          # pretty terminal output
+
+# ── Notebook / EDA ────────────────────────────────────────────────
+jupyter>=1.0.0
+ipykernel>=6.0.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+plotly>=5.18.0
+
+# ── Testing ───────────────────────────────────────────────────────
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# ── Utilities ─────────────────────────────────────────────────────
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# ── Protenix (AlphaFold3 reproduction) ───────────────────────────
+# Install from source — see scripts/download_models.sh
+# git clone https://github.com/bytedance/protenix
+# pip install -e protenix/
+
+# ── RibonanzaNet2 ─────────────────────────────────────────────────
+# Checkpoint downloaded via Kaggle API — see scripts/download_models.sh
+# Network code is bundled in models/ribonanzanet2/
+
+# ── External binaries (installed via apt / conda, not pip) ────────
+# mmseqs2       — template search
+# infernal      — cmscan for Rfam family classification
+# viennarna     — RNAfold for secondary structure
+# usalign       — US-align for TM-score computation

@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Env
+.venv/
+venv/
+ENV/
+
+# Large data files — NOT committed, lives in /home/ilan/kaggle/data/
+data/pdb_cache/structures/
+data/pdb_cache/*.pkl
+data/pdb_cache/*.dbtype
+data/pdb_cache/*.index
+data/pdb_cache/*.lookup
+data/pdb_cache/*.source
+data/msa/
+data/rfam/Rfam.cm
+data/rfam/Rfam.cm.i1*
+data/raw/*.csv
+
+# Model checkpoints — too large for git
+models/ribonanzanet2/pytorch_model_fsdp.bin
+models/protenix/*.pt
+external/
+
+# Outputs
+outputs/*.csv
+outputs/*.log
+*.scores.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/

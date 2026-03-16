@@ -1,0 +1,97 @@
+pipeline:
+  # ── Paths (relative to project root) ──────────────────────────────
+  # Symlink or copy: ln -s /home/ilan/kaggle/data/test_sequences.csv data/raw/
+  input_csv:  "data/raw/test_sequences.csv"
+  output_csv: "outputs/submission.csv"
+
+  n_candidates: 5           # competition requires exactly 5 predictions
+  device: "cuda"
+  seed_base: 42
+  max_sequence_length: 6000 # Part 2: assemblies up to 6000 nt (9MME = 4640 nt)
+  chunk_length: 400         # split sequences >400 nt for 8GB VRAM
+
+  # Compare output against this to verify all residues are present
+  sample_submission: "data/raw/sample_submission.csv"
+
+  # Multi-chain handling (stoichiometry != "A:1"):
+  #   tile_monomer  → predict monomer, tile N copies
+  #   predict_full  → feed full concatenated sequence
+  #   skip          → skip multi-chain targets (not recommended)
+  multi_chain_strategy: "tile_monomer"
+
+secondary_structure:
+  engine: "viennarna"       # viennarna / eternafold / fallback
+  use_pseudoknot: false
+  temperature: 37.0
+
+family_classifier:
+  rfam_db: "data/rfam/Rfam.cm"
+  evalue_threshold: 1.0e-5
+  known_families:
+    - riboswitch
+    - tRNA
+    - ribosomal
+    - viral
+    - aptamer
+    - ribozyme
+    - large_ncrna   # Golld, ROOL, OLE (Part 2 specific)
+
+template_search:
+  enabled: true
+  # Build from your local PDB_RNA folder:
+  #   bash scripts/build_pdb_cache.sh
+  mmseqs2_db: "data/pdb_cache/pdb_rna_mmseqs2"
+  pdb_c1_cache: "data/pdb_cache/pdb_c1_coords.pkl"
+  local_pdb_dir: "/home/ilan/kaggle/data/PDB_RNA"
+  max_templates: 10
+  min_seq_identity: 0.25
+  min_coverage: 0.5
+
+routing:
+  tbm_threshold: 0.45
+  force_denovo_families:
+    - "unknown"
+    - "large_ncrna"
+    - "new_to_nature"
+
+protenix:
+  checkpoint: "models/protenix/protenix_base_default_v0.5.0.pt"
+  use_template: "ca_precomputed"
+  n_cycle: 10
+  n_sample: 1
+  n_step: 200
+  use_msa: true
+  msa_dir: "data/msa"
+  n_template_blocks: 2
+  dtype: "bf16"                   # bf16 required for RTX 4060 (Ampere)
+  gradient_checkpointing: true    # critical for 8GB VRAM above 300 nt
+
+ribonanzanet2:
+  checkpoint: "models/ribonanzanet2/pytorch_model_fsdp.bin"
+  network_config: "models/ribonanzanet2/pairwise.yaml"
+  freeze_encoder: true
+
+motif_correction:
+  enabled: true
+  gnra_tetraloop: true
+  kturn: true
+  motif_detection_rmsd: 2.0
+  correction_weight: 0.85
+
+candidate_sampling:
+  n_seeds: 5
+  seeds: [42, 123, 456, 789, 1337]
+  ranking_metric: "plddt"
+  diversity_weighting: 0.2
+
+logging:
+  level: "INFO"
+  log_file: "outputs/pipeline.log"
+  save_intermediates: true
+
+hardware:
+  n_workers: 4
+  pin_memory: true
+  vram_gb: 8      # RTX 4060
+  ram_gb: 32
+  cpu_cores: 24   # i9-13980HX
