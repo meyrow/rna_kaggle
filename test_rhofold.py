@@ -20,37 +20,31 @@ with torch.inference_mode():
 
 last = output[-1]
 
-# Check cords_c1' key
-key = "cords_c1'"
-c1_raw = last[key]
-if isinstance(c1_raw, list):
-    c1_raw = c1_raw[-1]
-print(f"cords_c1' shape : {c1_raw.shape}")
-print(f"cords_c1' min   : {c1_raw.min():.3f}  max: {c1_raw.max():.3f}  nonzero: {c1_raw.abs().sum():.1f}")
+# frames shape: (8, 1, 73, 7) — 7 = 4 (quaternion) + 3 (translation)
+# C1' is the ORIGIN of each backbone frame, so frame translation = C1' position
+frames = last['frames']
+print(f"frames shape: {frames.shape}")
+for i in range(frames.shape[0]):
+    trans = frames[i, 0, :, 4:].cpu().numpy()   # (73, 3) translation
+    nz = np.sum(np.any(np.abs(trans) > 0.01, axis=1))
+    print(f"  Frame {i}: range=[{trans.min():.2f}, {trans.max():.2f}]  nonzero_res={nz}  res0={trans[0].round(3)}")
 
-# Inspect cord_tns_pred — shape (1, 1679, 3) = 73 residues * N atoms
-ct = last['cord_tns_pred']
-if isinstance(ct, list):
-    ct = ct[-1]
-ct = ct.squeeze(0)   # (1679, 3)
-print(f"\ncord_tns_pred shape: {ct.shape}")
-n_res = len(seq)
-n_atoms = ct.shape[0] // n_res
-c = ct.reshape(n_res, n_atoms, 3).cpu().numpy()
-print(f"Reshaped to ({n_res}, {n_atoms}, 3)")
-print("\nNon-zero atom indices for residue 0:")
-for i in range(n_atoms):
-    v = c[0, i]
-    if not np.allclose(v, 0, atol=1e-3):
-        print(f"  atom[{i:2d}]: {v.round(3)}")
-
-# Try to get atom names from constants
-print("\nChecking constants for atom order:")
+# Try converter
+print("\nConverter approach:")
 try:
-    from rhofold.utils import constants
-    attrs = [a for a in dir(constants) if 'ATOM' in a.upper() or 'C1' in a]
-    print("Relevant constants:", attrs)
-    for a in attrs:
-        print(f"  {a} = {getattr(constants, a)}")
+    converter = p._model.structure_module.converter
+    print(f"  type: {type(converter).__name__}")
+    methods = [m for m in dir(converter) if not m.startswith('_')]
+    print(f"  methods: {methods}")
+
+    # Try build_cords or similar
+    for method_name in methods:
+        print(f"  {method_name}: {getattr(converter, method_name)}")
 except Exception as e:
-    print(f"  constants error: {e}")
+    print(f"  error: {e}")
+
+# Try using structure_module directly with get_c1_coords
+print("\nStructure module methods:")
+sm = p._model.structure_module
+sm_methods = [m for m in dir(sm) if not m.startswith('_') and 'cord' in m.lower()]
+print(f"  {sm_methods}")
