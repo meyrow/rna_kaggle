@@ -100,7 +100,15 @@ def main():
             continue
 
         tlen = len(coords)
+
+        # Skip if length mismatch > 20% (poor alignment, padded coords hurt score)
+        len_diff = abs(tlen - qlen) / max(tlen, qlen)
+        if len_diff > 0.20 and pident < 99.0:
+            print(f'{tid:<12} {template_chain:<20} {pident:>7.1f}% {qlen:>6} {tlen:>6}   SKIP (len diff {len_diff:.0%})')
+            continue
+
         trimmed = align_and_trim(coords, qlen)
+        exact = (pident == 100.0 and tlen == qlen)
         results[tid] = {
             'coords':   trimmed,
             'pident':   pident,
@@ -108,7 +116,7 @@ def main():
             'q_len':    qlen,
             't_len':    tlen,
         }
-        status = '✓ EXACT' if pident == 100.0 else f'✓ {pident:.0f}%'
+        status = '✓ EXACT' if exact else f'✓ {pident:.0f}%'
         print(f'{tid:<12} {template_chain:<20} {pident:>7.1f}% {qlen:>6} {tlen:>6}   {status}')
 
     print(f'\nTotal template predictions: {len(results)}/28')
