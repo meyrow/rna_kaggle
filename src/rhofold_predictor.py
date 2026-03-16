@@ -157,27 +157,36 @@ class RhoFoldPredictor:
             )
 
         # ── Extract C1' coordinates ───────────────────────────────────
-        cords = None
-        for key in ("cords", "cord", "coordinates", "positions"):
-            if key in output:
-                cords = output[key]
-                break
+        # forward() collects outputs across recycle iterations → list of dicts
+        # Take the last element (final prediction)
+        if isinstance(output, list):
+            output = output[-1]
+
+        if isinstance(output, dict):
+            # structure_module stores coords in 'cord_tns_pred' (list of tensors)
+            cords = output.get("cord_tns_pred") or output.get("cords") or output.get("cord")
+        else:
+            # Unexpected type — print for debugging
+            logger.warning(f"Unexpected output type: {type(output)}: {output}")
+            return self._stub_predict(sequence, seed)
 
         if cords is None:
             logger.warning(f"RhoFold output keys: {list(output.keys())}")
             return self._stub_predict(sequence, seed)
 
+        # cord_tns_pred is a list of tensors (one per recycle layer) — take last
+        if isinstance(cords, list):
+            cords = cords[-1]
+
         c = cords.squeeze(0).cpu().float().numpy()   # (L, atoms, 3) or (L, 3)
         if c.ndim == 3:
-            # RhoFold atom ordering (from structure_module):
-            # [P, C4', N1/N9, C1', C2', O2', O3', O4', O5', OP1, OP2, C5', C3']
-            # C1' = index 3
+            # RhoFold atom ordering: [P, C4', N1/N9, C1', ...]  C1' = index 3
             c1 = c[:, 3, :] if c.shape[1] > 3 else c[:, 0, :]
         else:
             c1 = c
 
         # ── Extract pLDDT ─────────────────────────────────────────────
-        plddt_out = output.get("plddt")
+        plddt_out = output.get("plddt") if isinstance(output, dict) else None
         if plddt_out is not None:
             p = plddt_out.squeeze().cpu().float().numpy()
             if p.ndim > 1:
