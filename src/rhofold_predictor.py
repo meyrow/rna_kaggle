@@ -188,6 +188,9 @@ class RhoFoldPredictor:
         # ── Extract pLDDT ─────────────────────────────────────────────
         plddt_out = output.get("plddt") if isinstance(output, dict) else None
         if plddt_out is not None:
+            # plddt may be a tuple of tensors — take the last one
+            if isinstance(plddt_out, (list, tuple)):
+                plddt_out = plddt_out[-1]
             p = plddt_out.squeeze().cpu().float().numpy()
             if p.ndim > 1:
                 p = p.mean(-1)
