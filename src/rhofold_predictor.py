@@ -148,7 +148,9 @@ class RhoFoldPredictor:
         # seq: residue-type integers 0-3 (used by structure_module)
         seq_int = [NUC_TO_IDX.get(c.upper(), 0) for c in sequence]
 
-        # Expand to (bs=1, msa_depth=1, L) as expected by MSAEmbedder
+        # tokens:       (bs=1, msa_depth=1, L) — MSAEmbedder expects 3D
+        # rna_fm_tokens: (bs=1, L)             — RNA-FM model expects 2D
+        rna_fm_tokens = tokens.squeeze(1) if tokens.dim() == 3 else tokens
         if tokens.dim() == 2:
             tokens = tokens.unsqueeze(1)   # (1, 1, L)
 
@@ -156,7 +158,7 @@ class RhoFoldPredictor:
         with torch.inference_mode():
             output = self._model(
                 tokens=tokens,
-                rna_fm_tokens=tokens,   # single-seq: same as tokens
+                rna_fm_tokens=rna_fm_tokens,   # 2D for RNA-FM
                 seq=seq_int,
             )
 
