@@ -165,15 +165,14 @@ class RhoFoldPredictor:
             logger.warning(f"Unexpected output type: {type(output)}")
             return self._stub_predict(sequence, seed)
 
-        # Use "cords_c1'" key — shape (1, L, 3), direct C1' atom coords
-        raw_key = "cords_c1'"
-        cords_c1 = output.get(raw_key)
-        if cords_c1 is not None:
-            if isinstance(cords_c1, list):
-                cords_c1 = cords_c1[-1]
-            c1 = cords_c1.squeeze(0).cpu().float().numpy()  # (L, 3)
+        # frames: shape (8, 1, L, 7) where 7 = quaternion(4) + translation(3)
+        # Frame 0 is the backbone frame with C1' at origin.
+        # Therefore: frames[0, 0, :, 4:] = C1' Cartesian coordinates (L, 3)
+        frames = output.get("frames")
+        if frames is not None:
+            c1 = frames[0, 0, :, 4:].cpu().float().numpy()   # (L, 3)
         else:
-            # Fallback: cord_tns_pred has all atoms; C1' at index 3
+            # Fallback: cord_tns_pred reshaped to (L, n_atoms, 3), C1' at index 1
             cords = output.get("cord_tns_pred")
             if isinstance(cords, list):
                 cords = cords[-1]
@@ -181,7 +180,9 @@ class RhoFoldPredictor:
                 logger.warning(f"No coords found. Keys: {list(output.keys())}")
                 return self._stub_predict(sequence, seed)
             c = cords.squeeze(0).cpu().float().numpy()
-            c1 = c[:, 3, :] if (c.ndim == 3 and c.shape[1] > 3) else c
+            n_atoms = c.shape[0] // L
+            c = c.reshape(L, n_atoms, 3)
+            c1 = c[:, 1, :]   # C1' = index 1 per ATOM_NAMES_PER_RESD
 
         # ── Extract pLDDT ─────────────────────────────────────────────
         plddt_out = output.get("plddt") if isinstance(output, dict) else None
