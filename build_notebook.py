@@ -98,22 +98,49 @@ def build_notebook():
 
         # ── Environment detection ─────────────────────────────────────────────
         if os.path.exists("/kaggle/input"):
-            # Running on Kaggle
-            KAGGLE_ENV   = True
-            DATA_DIR     = "/kaggle/input/stanford-rna-3d-folding-2"
-            OUTPUT_DIR   = "/kaggle/working"
-            # Pipeline src/ is injected below from the pipeline dataset
-            PIPELINE_DIR = "/kaggle/input/rna-pipeline-src"
+            KAGGLE_ENV = True
+            OUTPUT_DIR = "/kaggle/working"
+            PIPELINE_DIR = "."  # notebook runs from working dir; src cells already defined
+
+            # Auto-detect competition data path — try known slugs
+            _candidates = [
+                "/kaggle/input/stanford-rna-3d-folding-2",
+                "/kaggle/input/stanford-rna-3d-folding",
+            ]
+            DATA_DIR = None
+            for _p in _candidates:
+                if os.path.exists(_p) and os.path.exists(f"{_p}/test_sequences.csv"):
+                    DATA_DIR = _p
+                    break
+
+            # Diagnostics — always print so logs show what was mounted
+            print("=== /kaggle/input/ contents ===")
+            try:
+                for _item in sorted(os.listdir("/kaggle/input")):
+                    _full = f"/kaggle/input/{_item}"
+                    _files = os.listdir(_full)[:5] if os.path.isdir(_full) else []
+                    print(f"  {_item}/  {_files}")
+            except Exception as _e:
+                print(f"  (error listing: {_e})")
+
+            if DATA_DIR is None:
+                # Last resort: search for test_sequences.csv anywhere under /kaggle/input
+                import glob
+                _found = glob.glob("/kaggle/input/**/test_sequences.csv", recursive=True)
+                if _found:
+                    DATA_DIR = os.path.dirname(_found[0])
+                    print(f"  Found test_sequences.csv via glob: {DATA_DIR}")
+                else:
+                    print("  ERROR: test_sequences.csv not found!")
+                    print("  ACTION NEEDED: Add competition to this notebook in Kaggle UI")
+                    print("  Go to notebook settings (right panel) -> Data -> Add competition")
+                    DATA_DIR = "/kaggle/input/stanford-rna-3d-folding-2"  # will fail clearly
         else:
-            # Running locally
             KAGGLE_ENV   = False
             DATA_DIR     = "/home/ilan/kaggle/data"
             OUTPUT_DIR   = "."
             PIPELINE_DIR = "."
 
-        # ── Add src/ to path ──────────────────────────────────────────────────
-        # On Kaggle: add PIPELINE_DIR (dataset containing repo src/)
-        # Locally:   add current dir (repo root)
         sys.path.insert(0, PIPELINE_DIR)
 
         print(f"Environment : {'KAGGLE' if KAGGLE_ENV else 'LOCAL'}")
