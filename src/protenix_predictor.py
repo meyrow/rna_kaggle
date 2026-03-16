@@ -111,6 +111,12 @@ class ProtenixPredictor:
         if not self.available:
             return self._stub(sequence, seed)
 
+        # Skip very long sequences — Protenix needs O(L^2) memory
+        max_len = 500  # RTX 4060: 8GB. P100: can handle ~1000nt
+        if len(sequence) > max_len:
+            logger.warning(f"Protenix: skipping {target_id} len={len(sequence)} > {max_len} (use RhoFold/stub)")
+            return self._stub(sequence, seed)
+
         try:
             return self._protenix_predict(sequence, target_id, seed, n_samples)
         except Exception as e:
