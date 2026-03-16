@@ -90,64 +90,42 @@ def build_notebook():
     """)))
 
     # ── Cell 1: Environment detection ──────────────────────────────────────────
-    env_cell = textwrap.dedent("""\
-        import os
-        import sys
-        import warnings
-        warnings.filterwarnings("ignore")
+    env_cell = """\
+# ─────────────────────────────────────────────────────────────
+# Environment Setup
+# ─────────────────────────────────────────────────────────────
+import os, sys, warnings
+warnings.filterwarnings('ignore')
 
-        # ── Environment detection ─────────────────────────────────────────────
-        if os.path.exists("/kaggle/input"):
-            KAGGLE_ENV = True
-            OUTPUT_DIR = "/kaggle/working"
-            PIPELINE_DIR = "."  # notebook runs from working dir; src cells already defined
+if os.path.exists('/kaggle/input'):
+    KAGGLE_ENV = True
+    OUTPUT_DIR = '/kaggle/working'
+    DATA_DIR   = '/kaggle/input/stanford-rna-3d-folding-2'
 
-            # Auto-detect competition data path — try known slugs
-            _candidates = [
-                "/kaggle/input/stanford-rna-3d-folding-2",
-                "/kaggle/input/stanford-rna-3d-folding",
-            ]
-            DATA_DIR = None
-            for _p in _candidates:
-                if os.path.exists(_p) and os.path.exists(f"{_p}/test_sequences.csv"):
-                    DATA_DIR = _p
-                    break
+    print('=== /kaggle/input contents ===')
+    for _d in sorted(os.listdir('/kaggle/input')):
+        print(f'  /kaggle/input/{_d}')
 
-            # Diagnostics — always print so logs show what was mounted
-            print("=== /kaggle/input/ contents ===")
-            try:
-                for _item in sorted(os.listdir("/kaggle/input")):
-                    _full = f"/kaggle/input/{_item}"
-                    _files = os.listdir(_full)[:5] if os.path.isdir(_full) else []
-                    print(f"  {_item}/  {_files}")
-            except Exception as _e:
-                print(f"  (error listing: {_e})")
-
-            if DATA_DIR is None:
-                # Last resort: search for test_sequences.csv anywhere under /kaggle/input
-                import glob
-                _found = glob.glob("/kaggle/input/**/test_sequences.csv", recursive=True)
-                if _found:
-                    DATA_DIR = os.path.dirname(_found[0])
-                    print(f"  Found test_sequences.csv via glob: {DATA_DIR}")
-                else:
-                    print("  ERROR: test_sequences.csv not found!")
-                    print("  ACTION NEEDED: Add competition to this notebook in Kaggle UI")
-                    print("  Go to notebook settings (right panel) -> Data -> Add competition")
-                    DATA_DIR = "/kaggle/input/stanford-rna-3d-folding-2"  # will fail clearly
+    _test = f'{DATA_DIR}/test_sequences.csv'
+    print(f'test_sequences.csv exists: {os.path.exists(_test)}')
+    if not os.path.exists(_test):
+        import glob as _g
+        _hits = _g.glob('/kaggle/input/**/test_sequences.csv', recursive=True)
+        if _hits:
+            DATA_DIR = os.path.dirname(_hits[0])
+            print(f'Found at: {DATA_DIR}')
         else:
-            KAGGLE_ENV   = False
-            DATA_DIR     = "/home/ilan/kaggle/data"
-            OUTPUT_DIR   = "."
-            PIPELINE_DIR = "."
+            print('ERROR: test_sequences.csv not found!')
+else:
+    KAGGLE_ENV = False
+    DATA_DIR   = '/home/ilan/kaggle/data'
+    OUTPUT_DIR = '.'
 
-        sys.path.insert(0, PIPELINE_DIR)
-
-        print(f"Environment : {'KAGGLE' if KAGGLE_ENV else 'LOCAL'}")
-        print(f"DATA_DIR    : {DATA_DIR}")
-        print(f"OUTPUT_DIR  : {OUTPUT_DIR}")
-        print(f"Python      : {sys.version.split()[0]}")
-    """)
+sys.path.insert(0, '.')
+print(f'KAGGLE_ENV : {KAGGLE_ENV}')
+print(f'DATA_DIR   : {DATA_DIR}')
+print(f'OUTPUT_DIR : {OUTPUT_DIR}')
+"""
     cells.append(code_cell(env_cell, "Environment Setup"))
 
     # ── Cell 2: Install dependencies ───────────────────────────────────────────
