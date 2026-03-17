@@ -1,90 +1,194 @@
 """
-scripts/local_eval.py — Run full pipeline locally with RhoFold and score.
+scripts/local_eval.py — Local evaluation for TBM-direct pipeline.
+
+Mirrors exactly what the Kaggle notebook does:
+  1. Load templates from data/pdb_cache/template_predictions.json
+  2. SW-align each test sequence to its template
+  3. Build submission CSV (TBM or stub fallback)
+  4. Score against validation_labels.csv
 
 Usage:
-    cd ~/rna_kaggle
+    cd ~/kaggle/rna_kaggle
     python3 scripts/local_eval.py
 
-Runs all 28 test sequences through RhoFold and scores against validation_labels.csv.
+    # Custom paths:
+    python3 scripts/local_eval.py \
+        --data    /home/ilan/kaggle/data \
+        --output  outputs/my_submission.csv \
+        --labels  /home/ilan/kaggle/data/validation_labels.csv
 """
 
-import sys, os, logging, time, yaml
-# Reduce CUDA memory fragmentation
-os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+import argparse
+import json
+import os
+import sys
+import time
 from pathlib import Path
-
-# Add RhoFold repo to path BEFORE any imports
-RHOFOLD_REPO = '/home/ilan/kaggle/data/external/RhoFold'
-if os.path.exists(RHOFOLD_REPO):
-    sys.path.insert(0, RHOFOLD_REPO)
-
-# Project root
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 
 import numpy as np
 import pandas as pd
 
-DATA_DIR    = '/home/ilan/kaggle/data'
-OUTPUT_DIR  = '/tmp/local_eval_out'
-OUT_CSV     = f'{OUTPUT_DIR}/submission.csv'
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.utils.tm_score import _tm_approx
 
-# ── Config ────────────────────────────────────────────────────────────────────
-cfg = {
-    'pipeline':   {'n_candidates': 5, 'device': 'cuda', 'chunk_length': 300,
-                   'max_sequence_length': 6000,
-                   'input_csv':  f'{DATA_DIR}/test_sequences.csv',
-                   'output_csv': OUT_CSV},
-    'secondary_structure': {'engine': 'viennarna', 'temperature': 37.0, 'use_pseudoknot': False},
-    'family_classifier':   {'rfam_db': '', 'evalue_threshold': 1e-5,
-                             'known_families': ['riboswitch','tRNA','ribosomal']},
-    'template_search':     {'enabled': False, 'mmseqs2_db': '',
-                             'pdb_c1_cache': f'{DATA_DIR}/pdb_c1_coords.pkl',
-                             'max_templates': 0, 'min_seq_identity': 0.25, 'min_coverage': 0.5},
-    'routing':             {'tbm_threshold': 0.45,
-                             'force_denovo_families': ['unknown','large_ncrna']},
-    'protenix':            {'checkpoint': '/home/ilan/kaggle/data/models/protenix/protenix_base_default_v0.5.0.pt',
-                             'rhofold_checkpoint': '/home/ilan/kaggle/data/models/rhofold/rhofold_pretrained_params.pt',
-                             'rhofold_repo': RHOFOLD_REPO,
-                             'protenix_out_dir': '/tmp/protenix_out',
-                             'use_template': 'ca_precomputed', 'n_cycle': 10, 'n_step': 200,
-                             'use_msa': False, 'msa_dir': f'{DATA_DIR}/MSA_v2',
-                             'n_template_blocks': 2, 'dtype': 'bf16',
-                             'gradient_checkpointing': True},
-    'ribonanzanet2':       {'checkpoint': f'{DATA_DIR}/models/ribonanzanet2/pytorch_model_fsdp.bin',
-                             'network_config': f'{DATA_DIR}/models/ribonanzanet2/pairwise.yaml',
-                             'freeze_encoder': True},
-    'motif_correction':    {'enabled': True, 'gnra_tetraloop': True, 'kturn': True,
-                             'motif_detection_rmsd': 2.0, 'correction_weight': 0.85},
-    'candidate_sampling':  {'n_seeds': 5, 'seeds': [42,123,456,789,1337],
-                             'ranking_metric': 'plddt', 'diversity_weighting': 0.2},
-}
+# ── Defaults ──────────────────────────────────────────────────────────────────
+DATA_DIR   = '/home/ilan/kaggle/data'
+OUTPUT_DIR = 'outputs'
+TEMPLATE_JSON = 'data/pdb_cache/template_predictions.json'
+SENTINEL   = -1e18
+SEEDS      = [42, 123, 456, 789, 1337]
+RESNAME    = {'A':'A','C':'C','G':'G','U':'U','T':'U','a':'A','c':'C','g':'G','u':'U','N':'N'}
+COLS       = ['ID','resname','resid'] + [f'{ax}_{i}' for i in range(1,6) for ax in ['x','y','z']]
 
-# Write config to yaml so run_pipeline can read it
-cfg_path = f'{OUTPUT_DIR}/config.yaml'
-with open(cfg_path, 'w') as f:
-    yaml.dump(cfg, f)
+# SW alignment
+_M, _X, _G, _MIN_COV = 2, -1, -2, 0.65
 
-# ── Run pipeline ──────────────────────────────────────────────────────────────
-from src.pipeline import run_pipeline
+def sw_align(a, b):
+    m, n = len(a), len(b)
+    H = np.zeros((m+1, n+1), dtype=np.int32)
+    for i in range(1, m+1):
+        for j in range(1, n+1):
+            s = _M if a[i-1]==b[j-1] else _X
+            H[i,j] = max(0, H[i-1,j-1]+s, H[i-1,j]+_G, H[i,j-1]+_G)
+    i, j = divmod(int(H.argmax()), n+1)
+    mapping = []
+    while H[i,j] > 0 and i > 0 and j > 0:
+        s = _M if a[i-1]==b[j-1] else _X
+        if   H[i,j] == H[i-1,j-1]+s: mapping.append((i-1,j-1)); i-=1; j-=1
+        elif H[i,j] == H[i-1,j]+_G:  i -= 1
+        else:                          j -= 1
+    mapping.reverse()
+    return mapping, len(mapping)/len(a) if a else 0.0
 
-t0 = time.time()
-run_pipeline(cfg_path, cfg['pipeline']['input_csv'], OUT_CSV)
-elapsed = time.time() - t0
-print(f'\nTotal time: {elapsed/60:.1f} min  ({elapsed/28:.1f}s per sequence)')
+def get_coords(tid, seq, templates):
+    if tid not in templates:
+        return None, 'stub (no template)'
+    t     = templates[tid]
+    c     = t['coords']
+    t_seq = t['template_seq']
+    L     = len(seq)
+    if t_seq and len(seq) >= 10:
+        mapping, cov = sw_align(seq, t_seq)
+        if cov >= _MIN_COV and mapping:
+            safe    = min(len(c), len(t_seq))
+            aligned = np.array([c[j] for (_,j) in mapping if j < safe], dtype=np.float32)
+            if len(aligned) < L:
+                d     = aligned[-1]-aligned[-2] if len(aligned)>=2 else np.zeros(3)
+                extra = np.array([aligned[-1]+d*(i+1) for i in range(L-len(aligned))], dtype=np.float32)
+                aligned = np.vstack([aligned, extra])
+            return aligned[:L], f"TBM {t['pident']:.0f}% (cov={cov:.2f})"
+    # Legacy trim fallback
+    base = c[:L] if len(c)>=L else np.vstack([c, np.zeros((L-len(c),3),dtype=np.float32)])
+    return base, f"TBM {t['pident']:.0f}% (legacy-trim)"
 
-# ── Score ─────────────────────────────────────────────────────────────────────
-for labels_csv in [
-    f'{DATA_DIR}/validation_labels.csv',
-    f'{DATA_DIR}/competitions/stanford-rna-3d-folding-2/validation_labels.csv',
-]:
+def stub_coords(seq, seed=42):
+    rng = np.random.default_rng(seed)
+    n   = len(seq)
+    t   = np.linspace(0, n*0.6, n)
+    c   = np.stack([9*np.cos(t), 9*np.sin(t), 2.8*np.arange(n)], axis=1).astype(np.float32)
+    return c + rng.normal(0, 0.5, c.shape).astype(np.float32)
+
+def build_submission(test, templates, output_csv):
+    os.makedirs(os.path.dirname(output_csv) if os.path.dirname(output_csv) else '.', exist_ok=True)
+    rows   = []
+    n_tbm  = n_stub = 0
+    print(f"\n{'Target':<14} {'Len':>5}  {'Source'}")
+    print('-' * 50)
+    for _, row in test.iterrows():
+        tid, seq = row['target_id'], row['sequence']
+        L        = len(seq)
+        base, src = get_coords(tid, seq, templates)
+        if base is None:
+            base = stub_coords(seq)
+            src  = 'stub'
+            n_stub += 1
+        else:
+            n_tbm += 1
+        noise = 0.05 if 'TBM' in src else 0.5
+        print(f"  {tid:<12} {L:>5}  {src}")
+        all_c = [base + np.random.default_rng(s).normal(0, noise, base.shape).astype(np.float32) for s in SEEDS]
+        for j in range(L):
+            r = {'ID': f'{tid}_{j+1}', 'resname': RESNAME.get(seq[j].upper(),'N'), 'resid': j+1}
+            for k, c in enumerate(all_c):
+                r[f'x_{k+1}'] = round(float(c[j,0]),3)
+                r[f'y_{k+1}'] = round(float(c[j,1]),3)
+                r[f'z_{k+1}'] = round(float(c[j,2]),3)
+            rows.append(r)
+    pd.DataFrame(rows)[COLS].to_csv(output_csv, index=False)
+    print(f'\nTBM: {n_tbm}/28  Stub: {n_stub}/28')
+    print(f'Submission: {output_csv}  ({len(rows):,} rows)')
+    return n_tbm, n_stub
+
+def score(submission_csv, labels_csv):
+    lbl = pd.read_csv(labels_csv)
+    lbl['target'] = lbl['ID'].str.rsplit('_', n=1).str[0]
+    sub = pd.read_csv(submission_csv)
+    sub['target'] = sub['ID'].str.rsplit('_', n=1).str[0]
+    n_ref = sum(1 for i in range(1,41) if f'x_{i}' in lbl.columns)
+
+    results = []
+    for tgt in sorted(lbl['target'].unique()):
+        ls    = lbl[lbl['target']==tgt].sort_values('resid')
+        ps    = sub[sub['target']==tgt].sort_values('resid')
+        refs  = [ls.loc[ls[f'x_{i}']!=SENTINEL,[f'x_{i}',f'y_{i}',f'z_{i}']].values.astype(np.float32)
+                 for i in range(1,n_ref+1)
+                 if f'x_{i}' in ls.columns and not (ls[f'x_{i}']==SENTINEL).all()]
+        preds = [ps[[f'x_{i}',f'y_{i}',f'z_{i}']].values.astype(np.float32) for i in range(1,6)]
+        best  = 0.0
+        for p in preds:
+            for r in refs:
+                n = min(len(p), len(r))
+                best = max(best, _tm_approx(p[:n], r[:n]))
+        results.append({'target': tgt, 'tm': best})
+
+    df = pd.DataFrame(results).sort_values('tm', ascending=False)
+    print(f"\n{'Target':<12} {'TM':>7}  {'Quality'}")
+    print('-' * 40)
+    for _, r in df.iterrows():
+        q = '✓ correct' if r['tm']>=0.45 else ('~ partial' if r['tm']>=0.25 else '✗ wrong')
+        print(f"  {r['target']:<10} {r['tm']:>7.4f}  {q}")
+    mean = df['tm'].mean()
+    print(f"\n{'MEAN TM-SCORE':>20} : {mean:.4f}")
+    print(f"{'Correct (≥0.45)':>20} : {(df['tm']>=0.45).sum()}/28")
+    print(f"{'Vfold human expert':>20} : ~0.55")
+    print(f"{'Top Part 1 teams':>20} : ~0.59–0.64")
+    return mean
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data',      default=DATA_DIR)
+    parser.add_argument('--templates', default=TEMPLATE_JSON)
+    parser.add_argument('--output',    default=f'{OUTPUT_DIR}/submission_local.csv')
+    parser.add_argument('--labels',    default=None)
+    args = parser.parse_args()
+
+    labels_csv = args.labels or f'{args.data}/validation_labels.csv'
+
+    print('Loading templates...')
+    with open(args.templates) as f:
+        raw = json.load(f)
+    templates = {k: {
+        'coords':       np.array(v['coords'], dtype=np.float32),
+        'pident':       v['pident'],
+        'template_seq': v.get('template_seq', ''),
+    } for k, v in raw.items()}
+    print(f'  {len(templates)}/28 templates loaded')
+
+    print('\nLoading test sequences...')
+    test = pd.read_csv(f'{args.data}/test_sequences.csv')
+    test['sequence'] = test['sequence'].str.upper().str.replace('T', 'U')
+
+    t0 = time.time()
+    build_submission(test, templates, args.output)
+    build_time = time.time() - t0
+    print(f'Build time: {build_time:.1f}s')
+
     if os.path.exists(labels_csv):
-        print(f'\nScoring against: {labels_csv}')
-        os.system(f'python3 scripts/validate_submission.py --submission {OUT_CSV} --labels {labels_csv}')
-        break
-else:
-    print(f'\nNo validation_labels.csv found. Run manually:')
-    print(f'  python3 scripts/validate_submission.py --submission {OUT_CSV} --labels <path>')
+        t0 = time.time()
+        score(args.output, labels_csv)
+        print(f'Score time: {time.time()-t0:.1f}s')
+    else:
+        print(f'\nNo labels at {labels_csv} — skipping score')
 
+if __name__ == '__main__':
+    main()
