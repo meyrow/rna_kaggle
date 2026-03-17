@@ -406,12 +406,15 @@ else:
 if _templates and 'all_predictions' in dir():
     _overridden = 0
     for _pred in all_predictions:
-        _tid = _pred.target_id
+        # all_predictions is a list of dicts with keys: target_id, sequence, structures
+        _tid = _pred['target_id']
         if _tid not in _templates:
             continue
         _tmpl = _templates[_tid]
-        _L = len(_pred.sequence)
+        _seq = _pred.get('sequence', '')
+        _L = len(_seq)
         _c = _tmpl['coords']
+        # Trim or pad to sequence length
         if len(_c) > _L:
             _c = _c[:_L]
         elif len(_c) < _L:
@@ -422,8 +425,12 @@ if _templates and 'all_predictions' in dir():
             else:
                 _extra = _np.zeros((_pad, 3), dtype=_np.float32)
             _c = _np.vstack([_c, _extra])
-        _pred.c1_coords = _c
-        _pred.plddt = 95.0 if _tmpl['pident'] == 100.0 else float(_tmpl['pident'])
+        # Override ALL 5 structures with template coords (+ tiny noise for diversity)
+        _plddt = 95.0 if _tmpl['pident'] == 100.0 else float(_tmpl['pident'])
+        for _struct in _pred.get('structures', []):
+            _rng = _np.random.default_rng(42)
+            _struct.c1_coords = (_c + _rng.normal(0, 0.1, _c.shape)).astype(_np.float32)
+            _struct.plddt = _plddt
         _overridden += 1
     print(f"TBM override: {_overridden}/{len(all_predictions)} predictions updated")
 """
