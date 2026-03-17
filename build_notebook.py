@@ -376,16 +376,26 @@ print(f'OUTPUT_DIR : {OUTPUT_DIR}')
         print(df.head(3).to_string())
     """)
 
-    # ── TBM Template Override Cell ────────────────────────────────────────
+    # ── TBM-Direct Submission Builder Cell ──────────────────────────────────
     tbm_cell = """# ─────────────────────────────────────────────────────────────────────────
-# Template-Based Modeling (TBM) — Override predictions with PDB templates
-# 17/28 test sequences have PDB matches (12 at 100% identity)
+# TBM-Direct Submission Builder  (v12)
+# Bypasses all_predictions entirely — builds submission.csv directly
+# from PDB template coordinates.  Stub A-form helix for non-TBM targets.
+#
+# Diagnostic: prints per-target status so silent failures are impossible.
 # ─────────────────────────────────────────────────────────────────────────
-import json as _json, numpy as _np, os as _os
+import json as _json, numpy as _np, os as _os, pandas as _pd
 
+RESNAME_MAP = {
+    "A":"A","C":"C","G":"G","U":"U","T":"U",
+    "a":"A","c":"C","g":"G","u":"U","N":"N",
+}
+SUBMISSION_COLS = ["ID","resname","resid"] + [
+    f"{ax}_{i}" for i in range(1, 6) for ax in ["x","y","z"]
+]
+
+# ── Load templates ──────────────────────────────────────────────────────
 _templates = {}
-
-# Look for template_predictions.json in dataset mount or competition data
 for _tp in [
     "/kaggle/input/rna-templates/template_predictions.json",
     f"{DATA_DIR}/template_predictions.json",
@@ -401,40 +411,95 @@ for _tp in [
         print(f"Loaded {len(_templates)} TBM templates from {_tp}")
         break
 else:
-    print("No template_predictions.json found — using model predictions only")
+    print("WARNING: No template_predictions.json found — all targets will use stub")
 
-if _templates and 'all_predictions' in dir():
-    _overridden = 0
-    for _pred in all_predictions:
-        # all_predictions is a list of dicts with keys: target_id, sequence, structures
-        _tid = _pred['target_id']
-        if _tid not in _templates:
-            continue
-        _tmpl = _templates[_tid]
-        _seq = _pred.get('sequence', '')
-        _L = len(_seq)
-        _c = _tmpl['coords']
-        # Trim or pad to sequence length
-        if len(_c) > _L:
-            _c = _c[:_L]
-        elif len(_c) < _L:
-            _pad = _L - len(_c)
-            if len(_c) >= 2:
-                _dir = _c[-1] - _c[-2]
-                _extra = _np.array([_c[-1] + _dir*(i+1) for i in range(_pad)], dtype=_np.float32)
-            else:
-                _extra = _np.zeros((_pad, 3), dtype=_np.float32)
-            _c = _np.vstack([_c, _extra])
-        # Override ALL 5 structures with template coords (+ tiny noise for diversity)
-        _plddt = 95.0 if _tmpl['pident'] == 100.0 else float(_tmpl['pident'])
-        for _struct in _pred.get('structures', []):
-            _rng = _np.random.default_rng(42)
-            _struct.c1_coords = (_c + _rng.normal(0, 0.1, _c.shape)).astype(_np.float32)
-            _struct.plddt = _plddt
-        _overridden += 1
-    print(f"TBM override: {_overridden}/{len(all_predictions)} predictions updated")
+def _stub_coords(seq, seed=42):
+    rng = _np.random.default_rng(seed)
+    n = len(seq)
+    t = _np.linspace(0, n * 0.6, n)
+    coords = _np.stack([
+        9.0 * _np.cos(t),
+        9.0 * _np.sin(t),
+        2.8 * _np.arange(n),
+    ], axis=1).astype(_np.float32)
+    coords += rng.normal(0, 0.5, coords.shape).astype(_np.float32)
+    return coords
+
+def _align_to_len(coords, L):
+    if len(coords) >= L:
+        return coords[:L]
+    pad = L - len(coords)
+    if len(coords) >= 2:
+        d = coords[-1] - coords[-2]
+        extra = _np.array(
+            [coords[-1] + d * (i + 1) for i in range(pad)],
+            dtype=_np.float32
+        )
+    else:
+        extra = _np.zeros((pad, 3), dtype=_np.float32)
+    return _np.vstack([coords, extra])
+
+# ── Build submission ────────────────────────────────────────────────────
+SEEDS = [42, 123, 456, 789, 1337]
+rows = []
+n_tbm = 0
+n_stub = 0
+
+print(f"\\n{'Target':<14} {'Len':>6}  {'Source':<22}  {'pident':>8}  {'Coords OK'}")
+print("-" * 65)
+
+for _, row in test_sequences.iterrows():
+    tid  = row["target_id"]
+    seq  = row["sequence"]
+    L    = len(seq)
+
+    if tid in _templates:
+        base_c  = _align_to_len(_templates[tid]['coords'], L)
+        pident  = _templates[tid]['pident']
+        source  = f"TBM (PDB {tid})"
+        noise   = 0.05
+        n_tbm  += 1
+    else:
+        base_c  = _stub_coords(seq, seed=42)
+        pident  = 0.0
+        source  = "stub (A-form)"
+        noise   = 0.5
+        n_stub += 1
+
+    coords_ok = (base_c.shape == (L, 3) and not _np.any(_np.isnan(base_c)))
+    print(f"{tid:<14} {L:>6}  {source:<22}  {pident:>7.1f}%  {'✓' if coords_ok else '✗ SHAPE MISMATCH'}")
+
+    all_coords = []
+    for s in SEEDS:
+        rng = _np.random.default_rng(s)
+        all_coords.append((base_c + rng.normal(0, noise, base_c.shape)).astype(_np.float32))
+
+    for j in range(L):
+        resname = RESNAME_MAP.get(seq[j].upper(), "N")
+        r = {"ID": f"{tid}_{j+1}", "resname": resname, "resid": j+1}
+        for k, c in enumerate(all_coords):
+            xyz = c[j]
+            r[f"x_{k+1}"] = round(float(xyz[0]), 3)
+            r[f"y_{k+1}"] = round(float(xyz[1]), 3)
+            r[f"z_{k+1}"] = round(float(xyz[2]), 3)
+        rows.append(r)
+
+df_sub = _pd.DataFrame(rows)[SUBMISSION_COLS]
+_output_path = f"{OUTPUT_DIR}/submission.csv"
+df_sub.to_csv(_output_path, index=False)
+
+print(f"\\nTBM-direct submission written: {_output_path}")
+print(f"  TBM   : {n_tbm}/28 targets")
+print(f"  Stub  : {n_stub}/28 targets")
+print(f"  Rows  : {len(df_sub):,}")
+print()
+_sample_tid = next(iter(_templates)) if _templates else test_sequences.iloc[0]["target_id"]
+_sample_rows = df_sub[df_sub["ID"].str.startswith(_sample_tid + "_")].head(3)
+print(f"Sample rows ({_sample_tid}):")
+print(_sample_rows[["ID","resname","resid","x_1","y_1","z_1"]].to_string())
 """
-    cells.append(code_cell(tbm_cell, "TBM Template Override"))
+    cells.append(code_cell(tbm_cell, "TBM-Direct Submission Builder"))
+
 
     cells.append(code_cell(save_cell, "Build submission.csv"))
 
