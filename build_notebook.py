@@ -362,13 +362,17 @@ print(f'OUTPUT_DIR : {OUTPUT_DIR}')
 
     # ── Cell: Build and save submission ───────────────────────────────────────
     save_cell = textwrap.dedent("""\
+        import os as _os, pandas as _pd
         output_path = f"{OUTPUT_DIR}/submission.csv"
-        submission_builder.build(all_predictions, output_path)
 
-        # Validate format
-        import pandas as pd
-        df = pd.read_csv(output_path)
-        print(f"\\nsubmission.csv written: {output_path}")
+        if _os.path.exists(output_path) and 'df_sub' in dir():
+            print("submission.csv already built by TBM-direct cell — skipping pipeline rebuild")
+            df = _pd.read_csv(output_path)
+        else:
+            submission_builder.build(all_predictions, output_path)
+            df = _pd.read_csv(output_path)
+
+        print(f"\\nsubmission.csv: {output_path}")
         print(f"  Rows    : {len(df):,}")
         print(f"  Columns : {list(df.columns)}")
         print(f"  Targets : {df['ID'].str.rsplit('_',n=1).str[0].nunique()}")
