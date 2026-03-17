@@ -375,6 +375,60 @@ print(f'OUTPUT_DIR : {OUTPUT_DIR}')
         print()
         print(df.head(3).to_string())
     """)
+
+    # ── TBM Template Override Cell ────────────────────────────────────────
+    tbm_cell = """# ─────────────────────────────────────────────────────────────────────────
+# Template-Based Modeling (TBM) — Override predictions with PDB templates
+# 17/28 test sequences have PDB matches (12 at 100% identity)
+# ─────────────────────────────────────────────────────────────────────────
+import json as _json, numpy as _np, os as _os
+
+_templates = {}
+
+# Look for template_predictions.json in dataset mount or competition data
+for _tp in [
+    "/kaggle/input/rna-templates/template_predictions.json",
+    f"{DATA_DIR}/template_predictions.json",
+]:
+    if _os.path.exists(_tp):
+        with open(_tp) as _f:
+            _raw = _json.load(_f)
+        for _tid, _t in _raw.items():
+            _templates[_tid] = {
+                'coords': _np.array(_t['coords'], dtype=_np.float32),
+                'pident': _t['pident'],
+            }
+        print(f"Loaded {len(_templates)} TBM templates from {_tp}")
+        break
+else:
+    print("No template_predictions.json found — using model predictions only")
+
+if _templates and 'all_predictions' in dir():
+    _overridden = 0
+    for _pred in all_predictions:
+        _tid = _pred.target_id
+        if _tid not in _templates:
+            continue
+        _tmpl = _templates[_tid]
+        _L = len(_pred.sequence)
+        _c = _tmpl['coords']
+        if len(_c) > _L:
+            _c = _c[:_L]
+        elif len(_c) < _L:
+            _pad = _L - len(_c)
+            if len(_c) >= 2:
+                _dir = _c[-1] - _c[-2]
+                _extra = _np.array([_c[-1] + _dir*(i+1) for i in range(_pad)], dtype=_np.float32)
+            else:
+                _extra = _np.zeros((_pad, 3), dtype=_np.float32)
+            _c = _np.vstack([_c, _extra])
+        _pred.c1_coords = _c
+        _pred.plddt = 95.0 if _tmpl['pident'] == 100.0 else float(_tmpl['pident'])
+        _overridden += 1
+    print(f"TBM override: {_overridden}/{len(all_predictions)} predictions updated")
+"""
+    cells.append(code_cell(tbm_cell, "TBM Template Override"))
+
     cells.append(code_cell(save_cell, "Build submission.csv"))
 
     # ── Cell: Quick local validation (skipped on Kaggle) ──────────────────────
