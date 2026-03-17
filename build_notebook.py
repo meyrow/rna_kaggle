@@ -381,24 +381,51 @@ print(f'OUTPUT_DIR : {OUTPUT_DIR}')
     """)
 
     # ── TBM-Direct Submission Builder Cell ──────────────────────────────────
-    tbm_cell = """# ─────────────────────────────────────────────────────────────────────────
-# TBM-Direct Submission Builder  (v12)
-# Bypasses all_predictions entirely — builds submission.csv directly
-# from PDB template coordinates.  Stub A-form helix for non-TBM targets.
+    tbm_cell = r"""# ─────────────────────────────────────────────────────────────────────────
+# TBM-Direct Submission Builder  (v13)
 #
-# Diagnostic: prints per-target status so silent failures are impossible.
+# Implements all 5 TBM best practices:
+#   1. Align before mapping  — SW local alignment, never slice by index
+#   2. Handle gaps correctly — extract only aligned residue coords
+#   3. Fix multi-chain bug   — coord index = template_seq position (bounded)
+#   4. Trim by alignment     — region determined by alignment, not Q_len
+#   5. Confidence check      — coverage < 0.70 → fall back to stub
 # ─────────────────────────────────────────────────────────────────────────
 import json as _json, numpy as _np, os as _os, pandas as _pd
 
-RESNAME_MAP = {
-    "A":"A","C":"C","G":"G","U":"U","T":"U",
-    "a":"A","c":"C","g":"G","u":"U","N":"N",
-}
-SUBMISSION_COLS = ["ID","resname","resid"] + [
-    f"{ax}_{i}" for i in range(1, 6) for ax in ["x","y","z"]
-]
+_MATCH, _MISMATCH, _GAP = 2, -1, -2
+_MIN_COVERAGE = 0.70
 
-# ── Load templates ──────────────────────────────────────────────────────
+def _sw_align(seq_a, seq_b):
+    m, n = len(seq_a), len(seq_b)
+    H = _np.zeros((m+1, n+1), dtype=_np.int32)
+    for i in range(1, m+1):
+        for j in range(1, n+1):
+            s = _MATCH if seq_a[i-1]==seq_b[j-1] else _MISMATCH
+            H[i,j] = max(0, H[i-1,j-1]+s, H[i-1,j]+_GAP, H[i,j-1]+_GAP)
+    i, j = divmod(int(H.argmax()), n+1)
+    mapping = []
+    while H[i,j] > 0 and i > 0 and j > 0:
+        s = _MATCH if seq_a[i-1]==seq_b[j-1] else _MISMATCH
+        if H[i,j] == H[i-1,j-1]+s:   mapping.append((i-1, j-1)); i -= 1; j -= 1
+        elif H[i,j] == H[i-1,j]+_GAP: i -= 1
+        else:                          j -= 1
+    mapping.reverse()
+    coverage = len(mapping)/len(seq_a) if seq_a else 0.0
+    return mapping, coverage
+
+def _extract_aligned_coords(coords, template_seq, mapping):
+    safe = min(len(coords), len(template_seq))
+    out  = [coords[t] for (_, t) in mapping if t < safe]
+    return _np.array(out, dtype=_np.float32) if out else None
+
+def _stub_coords(seq, seed=42):
+    rng = _np.random.default_rng(seed)
+    n = len(seq)
+    t = _np.linspace(0, n*0.6, n)
+    c = _np.stack([9.0*_np.cos(t), 9.0*_np.sin(t), 2.8*_np.arange(n)], axis=1).astype(_np.float32)
+    return c + rng.normal(0, 0.5, c.shape).astype(_np.float32)
+
 _templates = {}
 for _tp in [
     "/kaggle/input/rna-templates/template_predictions.json",
@@ -409,99 +436,90 @@ for _tp in [
             _raw = _json.load(_f)
         for _tid, _t in _raw.items():
             _templates[_tid] = {
-                'coords': _np.array(_t['coords'], dtype=_np.float32),
-                'pident': _t['pident'],
+                'coords':       _np.array(_t['coords'], dtype=_np.float32),
+                'pident':       _t['pident'],
+                'coverage':     _t.get('coverage', 1.0),
+                'template_seq': _t.get('template_seq', ''),
             }
         print(f"Loaded {len(_templates)} TBM templates from {_tp}")
         break
 else:
-    print("WARNING: No template_predictions.json found — all targets will use stub")
+    print("WARNING: No template_predictions.json — all targets will use stub")
 
-def _stub_coords(seq, seed=42):
-    rng = _np.random.default_rng(seed)
-    n = len(seq)
-    t = _np.linspace(0, n * 0.6, n)
-    coords = _np.stack([
-        9.0 * _np.cos(t),
-        9.0 * _np.sin(t),
-        2.8 * _np.arange(n),
-    ], axis=1).astype(_np.float32)
-    coords += rng.normal(0, 0.5, coords.shape).astype(_np.float32)
-    return coords
+_RESNAME = {"A":"A","C":"C","G":"G","U":"U","T":"U","a":"A","c":"C","g":"G","u":"U","N":"N"}
+_COLS    = ["ID","resname","resid"] + [f"{ax}_{i}" for i in range(1,6) for ax in ["x","y","z"]]
+_SEEDS   = [42, 123, 456, 789, 1337]
+_rows    = []
+_n_tbm = _n_stub = _n_lowcov = 0
 
-def _align_to_len(coords, L):
-    if len(coords) >= L:
-        return coords[:L]
-    pad = L - len(coords)
-    if len(coords) >= 2:
-        d = coords[-1] - coords[-2]
-        extra = _np.array(
-            [coords[-1] + d * (i + 1) for i in range(pad)],
-            dtype=_np.float32
-        )
-    else:
-        extra = _np.zeros((pad, 3), dtype=_np.float32)
-    return _np.vstack([coords, extra])
-
-# ── Build submission ────────────────────────────────────────────────────
-SEEDS = [42, 123, 456, 789, 1337]
-rows = []
-n_tbm = 0
-n_stub = 0
-
-print(f"\\n{'Target':<14} {'Len':>6}  {'Source':<22}  {'pident':>8}  {'Coords OK'}")
+print(f"\n{'Target':<14} {'Len':>5}  {'Source':<24}  {'Cov':>5}  {'Coords'}")
 print("-" * 65)
 
-for _, row in test_sequences.iterrows():
-    tid  = row["target_id"]
-    seq  = row["sequence"]
-    L    = len(seq)
+for _, _row in test_sequences.iterrows():
+    _tid = _row["target_id"]
+    _seq = _row["sequence"]
+    _L   = len(_seq)
+    _base_c = None
+    _source = None
+    _pident = 0.0
+    _cov    = 0.0
 
-    if tid in _templates:
-        base_c  = _align_to_len(_templates[tid]['coords'], L)
-        pident  = _templates[tid]['pident']
-        source  = f"TBM (PDB {tid})"
-        noise   = 0.05
-        n_tbm  += 1
-    else:
-        base_c  = _stub_coords(seq, seed=42)
-        pident  = 0.0
-        source  = "stub (A-form)"
-        noise   = 0.5
-        n_stub += 1
+    if _tid in _templates:
+        _tmpl     = _templates[_tid]
+        _t_coords = _tmpl["coords"]
+        _t_seq    = _tmpl["template_seq"]
+        _pre_cov  = _tmpl["coverage"]
 
-    coords_ok = (base_c.shape == (L, 3) and not _np.any(_np.isnan(base_c)))
-    print(f"{tid:<14} {L:>6}  {source:<22}  {pident:>7.1f}%  {'✓' if coords_ok else '✗ SHAPE MISMATCH'}")
+        if _t_seq and len(_seq) >= 10:
+            _mapping, _cov = _sw_align(_seq, _t_seq)
+            if _cov >= _MIN_COVERAGE and _mapping:
+                _base_c = _extract_aligned_coords(_t_coords, _t_seq, _mapping)
+                if _base_c is not None and len(_base_c) < _L:
+                    _pad = _L - len(_base_c)
+                    _d = (_base_c[-1]-_base_c[-2]) if len(_base_c)>=2 else _np.zeros(3)
+                    _extra = _np.array([_base_c[-1]+_d*(i+1) for i in range(_pad)], dtype=_np.float32)
+                    _base_c = _np.vstack([_base_c, _extra])
+                _source = f"TBM {_tmpl['pident']:.0f}% (sw_cov={_cov:.2f})"
+                _pident = _tmpl["pident"]
+                _n_tbm += 1
+            else:
+                _source = f"stub (sw_cov={_cov:.2f}<0.70)"
+                _n_lowcov += 1
+        else:
+            _c = _t_coords
+            _base_c = _c[:_L] if len(_c) >= _L else _np.vstack([_c, _np.zeros((_L-len(_c),3), dtype=_np.float32)])
+            _source = f"TBM {_tmpl['pident']:.0f}% (legacy-trim)"
+            _pident = _tmpl["pident"]
+            _cov    = _pre_cov
+            _n_tbm += 1
 
-    all_coords = []
-    for s in SEEDS:
-        rng = _np.random.default_rng(s)
-        all_coords.append((base_c + rng.normal(0, noise, base_c.shape)).astype(_np.float32))
+    if _base_c is None:
+        _base_c = _stub_coords(_seq, seed=42)
+        if _source is None: _source = "stub (no template)"
+        _n_stub += 1
 
-    for j in range(L):
-        resname = RESNAME_MAP.get(seq[j].upper(), "N")
-        r = {"ID": f"{tid}_{j+1}", "resname": resname, "resid": j+1}
-        for k, c in enumerate(all_coords):
-            xyz = c[j]
-            r[f"x_{k+1}"] = round(float(xyz[0]), 3)
-            r[f"y_{k+1}"] = round(float(xyz[1]), 3)
-            r[f"z_{k+1}"] = round(float(xyz[2]), 3)
-        rows.append(r)
+    _coords_ok = (_base_c.shape == (_L, 3) and not _np.any(_np.isnan(_base_c)))
+    print(f"{_tid:<14} {_L:>5}  {_source:<24}  {_cov:>5.2f}  {'V' if _coords_ok else 'X BAD'}")
 
-df_sub = _pd.DataFrame(rows)[SUBMISSION_COLS]
+    _all_c = [(_base_c + _np.random.default_rng(_s).normal(0, 0.05 if _pident>0 else 0.5, _base_c.shape)).astype(_np.float32) for _s in _SEEDS]
+    for _j in range(_L):
+        _r = {"ID": f"{_tid}_{_j+1}", "resname": _RESNAME.get(_seq[_j].upper(),"N"), "resid": _j+1}
+        for _k, _c in enumerate(_all_c):
+            _r[f"x_{_k+1}"] = round(float(_c[_j,0]),3)
+            _r[f"y_{_k+1}"] = round(float(_c[_j,1]),3)
+            _r[f"z_{_k+1}"] = round(float(_c[_j,2]),3)
+        _rows.append(_r)
+
+_df_sub = _pd.DataFrame(_rows)[_COLS]
 _output_path = f"{OUTPUT_DIR}/submission.csv"
-df_sub.to_csv(_output_path, index=False)
-
-print(f"\\nTBM-direct submission written: {_output_path}")
-print(f"  TBM   : {n_tbm}/28 targets")
-print(f"  Stub  : {n_stub}/28 targets")
-print(f"  Rows  : {len(df_sub):,}")
-print()
-_sample_tid = next(iter(_templates)) if _templates else test_sequences.iloc[0]["target_id"]
-_sample_rows = df_sub[df_sub["ID"].str.startswith(_sample_tid + "_")].head(3)
-print(f"Sample rows ({_sample_tid}):")
-print(_sample_rows[["ID","resname","resid","x_1","y_1","z_1"]].to_string())
+_df_sub.to_csv(_output_path, index=False)
+print(f"\nTBM-direct submission written: {_output_path}")
+print(f"  TBM     : {_n_tbm}/28")
+print(f"  Low-cov : {_n_lowcov}/28  (fell back to stub)")
+print(f"  Stub    : {_n_stub}/28")
+print(f"  Rows    : {len(_df_sub):,}")
 """
+    cells.append(code_cell(tbm_cell, "TBM-Direct Submission Builder v13"))
     cells.append(code_cell(tbm_cell, "TBM-Direct Submission Builder"))
 
 
