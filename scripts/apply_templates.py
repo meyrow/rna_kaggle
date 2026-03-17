@@ -30,8 +30,9 @@ TEST_CSV   = Path('/home/ilan/kaggle/data/test_sequences.csv')
 OUT_JSON   = Path('data/pdb_cache/template_predictions.json')
 
 MIN_PIDENT   = 85.0   # minimum % identity hit to consider
-MIN_COVERAGE = 0.70   # minimum query coverage — below this, skip template
+MIN_COVERAGE = 0.65   # minimum query coverage — below this, skip template
 MIN_COORDS   = 10     # minimum aligned residues
+MAX_TILE_RATIO = 2.5  # if Q_len/T_len <= this, try tiling (homodimer handling)
 
 # SW scoring
 MATCH, MISMATCH, GAP = 2, -1, -2
@@ -203,8 +204,55 @@ def main():
                   f'{q_len:>6} {len(mapping):>8} {coverage:>5.2f}   SKIP (no alignment)')
             continue
 
-        # ── 4. Confidence check ───────────────────────────────────────────
+        # ── 4. Confidence check + homodimer tiling ───────────────────────
         if coverage < MIN_COVERAGE:
+            # Check if query looks like a homodimer/repeat of the template
+            tile_ratio = q_len / len(template_seq) if template_seq else 0
+            if 1.5 <= tile_ratio <= MAX_TILE_RATIO and coverage >= 0.40:
+                # Try tiling: align template against first copy, then repeat coords
+                n_copies  = round(tile_ratio)
+                unit_len  = len(template_seq)
+                unit_coords = None
+                best_unit_mapping = None
+                # Align first copy of query against template
+                first_copy = query_seq[:unit_len]
+                m_unit, cov_unit, _ = sw_align(first_copy, template_seq)
+                if cov_unit >= MIN_COVERAGE and m_unit:
+                    raw_unit = extract_aligned_coords(coords, template_seq, m_unit)
+                    if raw_unit is not None and len(raw_unit) >= MIN_COORDS:
+                        unit_coords = raw_unit
+                        best_unit_mapping = m_unit
+                if unit_coords is not None:
+                    # Tile with small translation between copies
+                    tiled_parts = []
+                    if len(unit_coords) >= 2:
+                        span = unit_coords[-1] - unit_coords[0]
+                    else:
+                        span = np.array([0., 0., 10.], dtype=np.float32)
+                    for copy_i in range(n_copies):
+                        tiled_parts.append(unit_coords + span * copy_i)
+                    aligned_coords_tiled = np.vstack(tiled_parts).astype(np.float32)
+                    # Trim/pad to exact query length
+                    if len(aligned_coords_tiled) >= q_len:
+                        aligned_coords_tiled = aligned_coords_tiled[:q_len]
+                    else:
+                        pad = q_len - len(aligned_coords_tiled)
+                        d   = aligned_coords_tiled[-1] - aligned_coords_tiled[-2]
+                        extra = np.array([aligned_coords_tiled[-1] + d*(i+1)
+                                          for i in range(pad)], dtype=np.float32)
+                        aligned_coords_tiled = np.vstack([aligned_coords_tiled, extra])
+                    mapping  = [(i, i % unit_len) for i in range(q_len)]
+                    coverage = 1.0  # tiled = full coverage by design
+                    print(f'{tid:<12} {template_chain:<20} {pident_mmseqs:>7.1f}%  '
+                          f'{q_len:>6} {len(aligned_coords_tiled):>8} {coverage:>5.2f}   ✓ TILED x{n_copies}')
+                    results[tid] = {
+                        'coords':         aligned_coords_tiled.tolist(),
+                        'pident':         pident_mmseqs,
+                        'coverage':       round(coverage, 4),
+                        'template_chain': template_chain,
+                        'template_seq':   template_seq[:500],
+                    }
+                    continue
             print(f'{tid:<12} {template_chain:<20} {pident_mmseqs:>7.1f}%  '
                   f'{q_len:>6} {len(mapping):>8} {coverage:>5.2f}   SKIP (low coverage)')
             continue
