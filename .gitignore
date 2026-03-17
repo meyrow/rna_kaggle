@@ -58,3 +58,5 @@ data/pdb_cache/structures
 data/msa/
 data/raw/*.csv
 data/rfam/
+data/pdb_cache/pdb_rna_db2*
+data/pdb_cache/stub_hits.tsv

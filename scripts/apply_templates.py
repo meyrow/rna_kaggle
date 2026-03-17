@@ -29,7 +29,7 @@ FASTA      = Path('data/pdb_cache/pdb_rna_seqs.fa')
 TEST_CSV   = Path('/home/ilan/kaggle/data/test_sequences.csv')
 OUT_JSON   = Path('data/pdb_cache/template_predictions.json')
 
-MIN_PIDENT   = 85.0   # minimum % identity hit to consider
+MIN_PIDENT   = 70.0   # minimum % identity hit to consider
 MIN_COVERAGE = 0.65   # minimum query coverage — below this, skip template
 MIN_COORDS   = 10     # minimum aligned residues
 MAX_TILE_RATIO = 2.5  # if Q_len/T_len <= this, try tiling (homodimer handling)
