@@ -57,22 +57,32 @@ def run_rhofold(seq, device=DEVICE):
         with open(fas_path, 'w') as f:
             f.write(f'>query\n{seq}\n')
 
-        # Get features (no MSA)
-        msa_path = os.path.join(tmpdir, 'input.fasta')  # use single seq as MSA
-        tokens, rna_fm_tokens, seq_out = get_features(fas_path, msa_path)
+        # Get features (use single seq as MSA)
+        result = get_features(fas_path, fas_path)
 
-        tokens       = tokens.to(device)
+        # Debug: print what get_features returns
+        print(f"    get_features returned: type={type(result)}", end=' ')
+        if isinstance(result, (list, tuple)):
+            print(f"len={len(result)}, types={[type(x).__name__ for x in result]}")
+            tokens, rna_fm_tokens, seq_out = result
+        elif isinstance(result, dict):
+            print(f"keys={list(result.keys())}")
+            tokens       = result.get('msa_tokens', result.get('tokens'))
+            rna_fm_tokens = result.get('rna_fm_tokens')
+            seq_out      = result.get('seq', seq)
+        else:
+            print(f"value={str(result)[:100]}")
+            return None
+
+        tokens        = tokens.to(device)
         rna_fm_tokens = rna_fm_tokens.to(device)
 
         with torch.no_grad():
             outputs = model(tokens, rna_fm_tokens, seq_out)
 
-        # Get last recycle output
-        output = outputs[-1]
-        # cord_tns_pred shape: (1, L, n_atoms, 3)
-        coords = output['cord_tns_pred'][0].cpu().numpy()
-        # C1' is atom index 1
-        c1_coords = coords[:, 1, :]  # shape (L, 3)
+        output    = outputs[-1]
+        coords    = output['cord_tns_pred'][0].cpu().numpy()
+        c1_coords = coords[:, 1, :]
         return c1_coords.astype(np.float32)
 
 print("\nRunning RhoFold inference...")
