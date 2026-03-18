@@ -88,23 +88,27 @@ def stub_coords(seq, seed=42):
     c   = np.stack([9*np.cos(t), 9*np.sin(t), 2.8*np.arange(n)], axis=1).astype(np.float32)
     return c + rng.normal(0, 0.5, c.shape).astype(np.float32)
 
-def build_submission(test, templates, output_csv):
+def build_submission(test, templates, output_csv, rhofold=None):
     os.makedirs(os.path.dirname(output_csv) if os.path.dirname(output_csv) else '.', exist_ok=True)
     rows   = []
-    n_tbm  = n_stub = 0
+    n_tbm  = n_stub = n_rf = 0
     print(f"\n{'Target':<14} {'Len':>5}  {'Source'}")
     print('-' * 50)
     for _, row in test.iterrows():
         tid, seq = row['target_id'], row['sequence']
         L        = len(seq)
         base, src = get_coords(tid, seq, templates)
-        if base is None:
+        if base is None and rhofold and tid in rhofold:
+            base  = rhofold[tid]['coords']
+            src   = f"RhoFold (pLDDT={rhofold[tid]['plddt']:.2f})"
+            n_rf += 1
+        elif base is None:
             base = stub_coords(seq)
             src  = 'stub'
             n_stub += 1
         else:
             n_tbm += 1
-        noise = 0.05 if 'TBM' in src else 0.5
+        noise = 0.05 if ('TBM' in src or 'RhoFold' in src) else 0.5
         print(f"  {tid:<12} {L:>5}  {src}")
         all_c = [base + np.random.default_rng(s).normal(0, noise, base.shape).astype(np.float32) for s in SEEDS]
         for j in range(L):
@@ -115,7 +119,7 @@ def build_submission(test, templates, output_csv):
                 r[f'z_{k+1}'] = round(float(c[j,2]),3)
             rows.append(r)
     pd.DataFrame(rows)[COLS].to_csv(output_csv, index=False)
-    print(f'\nTBM: {n_tbm}/28  Stub: {n_stub}/28')
+    print(f'\nTBM: {n_tbm}/28  RhoFold: {n_rf}/28  Stub: {n_stub}/28')
     print(f'Submission: {output_csv}  ({len(rows):,} rows)')
     return n_tbm, n_stub
 
@@ -174,12 +178,22 @@ def main():
     } for k, v in raw.items()}
     print(f'  {len(templates)}/28 templates loaded')
 
+    # Load RhoFold predictions
+    rhofold_json = args.templates.replace('template_predictions.json', 'rhofold_predictions.json')
+    rhofold = {}
+    if os.path.exists(rhofold_json):
+        with open(rhofold_json) as f:
+            rraw = json.load(f)
+        rhofold = {k: {'coords': np.array(v['coords'], dtype=np.float32), 'plddt': v['plddt']}
+                   for k, v in rraw.items()}
+        print(f'  {len(rhofold)} RhoFold predictions loaded')
+
     print('\nLoading test sequences...')
     test = pd.read_csv(f'{args.data}/test_sequences.csv')
     test['sequence'] = test['sequence'].str.upper().str.replace('T', 'U')
 
     t0 = time.time()
-    build_submission(test, templates, args.output)
+    build_submission(test, templates, args.output, rhofold)
     build_time = time.time() - t0
     print(f'Build time: {build_time:.1f}s')
 
