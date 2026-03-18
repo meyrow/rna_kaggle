@@ -99,9 +99,25 @@ def build_submission(test, templates, output_csv, rhofold=None):
         L        = len(seq)
         base, src = get_coords(tid, seq, templates)
         if base is None and rhofold and tid in rhofold:
-            base  = rhofold[tid]['coords']
-            src   = f"RhoFold (pLDDT={rhofold[tid]['plddt']:.2f})"
+            rf          = rhofold[tid]
+            coords_list = rf['coords_list']
+            src   = f"RhoFold (pLDDT={rf['plddt']:.2f}, {len(coords_list)}seeds)"
             n_rf += 1
+            # Use each seed prediction as one of the 5 submission slots
+            all_c = []
+            for si in range(5):
+                c   = coords_list[si % len(coords_list)]
+                rng = np.random.default_rng(SEEDS[si])
+                all_c.append((c + rng.normal(0, 0.05, c.shape)).astype(np.float32))
+            print(f"  {tid:<12} {L:>5}  {src}")
+            for j in range(L):
+                r = {'ID': f'{tid}_{j+1}', 'resname': RESNAME.get(seq[j].upper(),'N'), 'resid': j+1}
+                for k, c in enumerate(all_c):
+                    r[f'x_{k+1}'] = round(float(c[j,0]),3)
+                    r[f'y_{k+1}'] = round(float(c[j,1]),3)
+                    r[f'z_{k+1}'] = round(float(c[j,2]),3)
+                rows.append(r)
+            continue  # skip normal row building
         elif base is None:
             base = stub_coords(seq)
             src  = 'stub'
@@ -184,9 +200,14 @@ def main():
     if os.path.exists(rhofold_json):
         with open(rhofold_json) as f:
             rraw = json.load(f)
-        rhofold = {k: {'coords': np.array(v['coords'], dtype=np.float32), 'plddt': v['plddt']}
-                   for k, v in rraw.items()}
-        print(f'  {len(rhofold)} RhoFold predictions loaded')
+        rhofold = {}
+        for k, v in rraw.items():
+            if 'coords_list' in v:
+                coords_list = [np.array(c, dtype=np.float32) for c in v['coords_list']]
+            else:
+                coords_list = [np.array(v['coords'], dtype=np.float32)]
+            rhofold[k] = {'coords_list': coords_list, 'coords': coords_list[0], 'plddt': v['plddt']}
+        print(f'  {len(rhofold)} RhoFold predictions loaded ({len(list(rhofold.values())[0]["coords_list"])} seeds each)')
 
     print('\nLoading test sequences...')
     test = pd.read_csv(f'{args.data}/test_sequences.csv')

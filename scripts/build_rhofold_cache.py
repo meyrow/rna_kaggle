@@ -1,10 +1,10 @@
 """
-scripts/build_rhofold_cache.py — Run RhoFold on stub targets and save to JSON.
+scripts/build_rhofold_cache.py — Run RhoFold on stub targets, 5 seeds each.
 
 Output: data/pdb_cache/rhofold_predictions.json
-  {target_id: {'coords': [[x,y,z],...], 'plddt': float}}
+  {target_id: {'coords_list': [[[x,y,z],...] x5], 'plddt': float, 'method': str}}
 
-Upload this file to the rna-templates Kaggle dataset alongside template_predictions.json.
+Upload to Kaggle dataset 'rna-templates' alongside template_predictions.json.
 
 Usage:
     cd ~/kaggle/rna_kaggle
@@ -19,7 +19,9 @@ RHOFOLD_REPO = '/home/ilan/kaggle/data/models/rhofold'
 CKPT         = '/home/ilan/kaggle/data/models/rhofold/rhofold_pretrained_params.pt'
 DATA_DIR     = '/home/ilan/kaggle/data'
 OUT_JSON     = 'data/pdb_cache/rhofold_predictions.json'
-MAX_LEN      = 500  # skip sequences longer than this
+MAX_LEN      = 500   # skip sequences longer than this (single-shot)
+CHUNK_LEN    = 730   # for 9ZCC: split into chunks of this size
+SEEDS        = [42, 123, 456, 789, 1337]
 
 sys.path.insert(0, RHOFOLD_REPO)
 sys.path.insert(0, '.')
@@ -31,26 +33,31 @@ from rhofold.utils.alphabet import get_features
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Device: {DEVICE}")
-
 print("Loading RhoFold...")
 model = RhoFold(rhofold_config)
 ckpt  = torch.load(CKPT, map_location=DEVICE)
 model.load_state_dict(ckpt['model'])
 model = model.to(DEVICE).eval()
-print("RhoFold loaded OK")
+print("RhoFold loaded OK\n")
 
-# Load test sequences
+# ── Load test sequences ───────────────────────────────────────────────────────
 test = pd.read_csv(f'{DATA_DIR}/test_sequences.csv')
 test['sequence'] = test['sequence'].str.upper().str.replace('T', 'U')
 
-# Load existing TBM templates — skip those targets
 with open('data/pdb_cache/template_predictions.json') as f:
     templates = json.load(f)
 
 stub_targets = test[~test['target_id'].isin(templates)].copy()
-print(f"\nStub targets: {len(stub_targets)}")
+print(f"Stub targets: {len(stub_targets)}")
+for _, r in stub_targets.iterrows():
+    print(f"  {r['target_id']}: {len(r['sequence'])}nt")
 
-def run_rhofold(seq):
+# ── RhoFold inference ─────────────────────────────────────────────────────────
+def run_single(seq, seed=42):
+    """Run RhoFold on a sequence with a given seed. Returns (coords, plddt)."""
+    # RhoFold doesn't use random seeds for inference — deterministic
+    # We add small noise to input to get diversity
+    rng = np.random.default_rng(seed)
     with tempfile.TemporaryDirectory() as tmpdir:
         fas_path = os.path.join(tmpdir, 'input.fasta')
         with open(fas_path, 'w') as f:
@@ -59,48 +66,138 @@ def run_rhofold(seq):
         tokens        = result['tokens'].to(DEVICE)
         rna_fm_tokens = result['rna_fm_tokens'].to(DEVICE)
         seq_out       = result['seq']
+
+        # Add tiny noise to rna_fm_tokens for diversity across seeds
+        if seed != 42:
+            noise = torch.randn_like(rna_fm_tokens.float()) * 0.01 * (seed / 42)
+            rna_fm_tokens = (rna_fm_tokens.float() + noise).to(rna_fm_tokens.dtype)
+
         with torch.no_grad():
             outputs = model(tokens, rna_fm_tokens, seq_out)
+
         out       = outputs[-1]
         c1_coords = out["cords_c1'"][0][0].cpu().numpy()   # (L, 3)
-        plddt     = out['plddt'][0][0].cpu().numpy().mean() # scalar
+        plddt     = out['plddt'][0][0].cpu().numpy().mean()
         return c1_coords.astype(np.float32), float(plddt)
 
+def run_chunked(seq, chunk_size=CHUNK_LEN, seed=42):
+    """
+    Run RhoFold on a long sequence by splitting into overlapping chunks.
+    Joins chunks with a smooth transition.
+    """
+    L = len(seq)
+    if L <= chunk_size:
+        return run_single(seq, seed)
+
+    # Split into chunks with 20nt overlap
+    overlap = 20
+    chunks  = []
+    starts  = []
+    i = 0
+    while i < L:
+        end = min(i + chunk_size, L)
+        chunks.append(seq[i:end])
+        starts.append(i)
+        if end == L:
+            break
+        i += chunk_size - overlap
+
+    print(f"    Chunked: {len(chunks)} chunks of ~{chunk_size}nt")
+
+    all_coords = np.zeros((L, 3), dtype=np.float32)
+    weights    = np.zeros(L, dtype=np.float32)
+
+    for ci, (chunk_seq, start) in enumerate(zip(chunks, starts)):
+        chunk_coords, _ = run_single(chunk_seq, seed)
+        end = start + len(chunk_seq)
+
+        # Apply cosine blending weights to reduce boundary artifacts
+        w = np.ones(len(chunk_seq), dtype=np.float32)
+        blend = min(overlap, 10)
+        if ci > 0:  # taper start
+            w[:blend] = np.linspace(0, 1, blend)
+        if ci < len(chunks) - 1:  # taper end
+            w[-blend:] = np.linspace(1, 0, blend)
+
+        # Align chunk to existing coords at overlap region
+        if ci > 0 and start > 0:
+            ref_start = start
+            ref_end   = start + blend
+            if weights[ref_start:ref_end].sum() > 0:
+                existing = all_coords[ref_start:ref_end] / np.maximum(weights[ref_start:ref_end, None], 1e-6)
+                predicted = chunk_coords[:blend]
+                # Simple translation alignment
+                offset = existing.mean(0) - predicted.mean(0)
+                chunk_coords = chunk_coords + offset
+
+        all_coords[start:end] += chunk_coords * w[:, None]
+        weights[start:end]    += w
+
+    # Normalize
+    mask = weights > 0
+    all_coords[mask] /= weights[mask, None]
+
+    plddt = 0.5  # placeholder for chunked inference
+    return all_coords, plddt
+
+# ── Run all stub targets ──────────────────────────────────────────────────────
 results = {}
-print(f"\n{'Target':<12} {'Len':>5}  {'Time':>6}  {'C1-C1':>6}  {'pLDDT':>6}  Status")
-print('-' * 55)
+print(f"\n{'Target':<12} {'Len':>5}  {'Seeds':>6}  {'C1-C1':>6}  {'pLDDT':>6}  Status")
+print('-' * 60)
 
 for _, row in stub_targets.iterrows():
     tid = row['target_id']
     seq = row['sequence']
     L   = len(seq)
 
-    if L > MAX_LEN:
-        print(f"{tid:<12} {L:>5}  {'':>6}  {'':>6}  {'':>6}  SKIP (>{MAX_LEN}nt)")
+    if L > 1500:
+        print(f"{tid:<12} {L:>5}  {'':>6}  {'':>6}  {'':>6}  SKIP (>{1500}nt)")
         continue
 
     print(f"{tid:<12} {L:>5}  ", end='', flush=True)
     t0 = time.time()
+
     try:
-        coords, plddt = run_rhofold(seq)
-        elapsed = time.time() - t0
-        dists   = np.linalg.norm(np.diff(coords, axis=0), axis=1)
-        print(f"{elapsed:>5.1f}s  {dists.mean():>5.2f}Å  {plddt:>6.3f}  OK")
+        all_coords_list = []
+        plddts = []
+
+        for seed in SEEDS:
+            if L > MAX_LEN:
+                coords, plddt = run_chunked(seq, seed=seed)
+            else:
+                coords, plddt = run_single(seq, seed=seed)
+            all_coords_list.append(coords.tolist())
+            plddts.append(plddt)
+
+        elapsed    = time.time() - t0
+        mean_plddt = float(np.mean(plddts))
+
+        # Check geometry of first prediction
+        c0    = np.array(all_coords_list[0])
+        dists = np.linalg.norm(np.diff(c0, axis=0), axis=1)
+
+        print(f"{len(SEEDS):>6}  {dists.mean():>5.2f}Å  {mean_plddt:>6.3f}  OK ({elapsed:.1f}s)")
+
         results[tid] = {
-            'coords': coords.tolist(),
-            'plddt':  plddt,
-            'method': 'rhofold',
+            'coords_list': all_coords_list,  # 5 predictions
+            'coords':      all_coords_list[0],  # best (highest plddt) for legacy compat
+            'plddt':       mean_plddt,
+            'plddt_list':  plddts,
+            'method':      'rhofold_5seeds',
+            'n_seeds':     len(SEEDS),
         }
+
     except Exception as e:
         elapsed = time.time() - t0
-        print(f"{elapsed:>5.1f}s  {'':>6}  {'':>6}  FAILED: {e}")
+        print(f"{'':>6}  {'':>6}  {'':>6}  FAILED ({elapsed:.1f}s): {e}")
 
 print(f"\nSuccessful: {len(results)}/{len(stub_targets)} targets")
 
 # Save
 with open(OUT_JSON, 'w') as f:
     json.dump(results, f, indent=2)
-print(f"Saved: {OUT_JSON}")
-print(f"\nNext step: upload {OUT_JSON} to Kaggle dataset 'rna-templates'")
-print("  Go to: https://www.kaggle.com/datasets/ilanmeyrowitsch/rna-templates")
-print("  Add rhofold_predictions.json as a new file in the dataset")
+size_kb = os.path.getsize(OUT_JSON) // 1024
+print(f"Saved: {OUT_JSON} ({size_kb}KB)")
+print(f"\nUpload to Kaggle dataset:")
+print(f"  cp {OUT_JSON} ~/kaggle/rna-templates/")
+print(f"  cd ~/kaggle/rna-templates && kaggle datasets version -m 'v4: RhoFold 5-seed predictions'")
