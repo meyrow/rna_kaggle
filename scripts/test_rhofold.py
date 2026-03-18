@@ -46,7 +46,7 @@ with open('data/pdb_cache/template_predictions.json') as f:
 stub_targets = test[~test['target_id'].isin(templates)].copy()
 print(f"\nStub targets: {len(stub_targets)}")
 for _, r in stub_targets.iterrows():
-    print(f"  {r['target_id']}: {r['seq_len']}nt")
+    print(f"  {r['target_id']}: {len(r['sequence'])}nt")
 
 # ── 3. Run inference ──────────────────────────────────────────────────────────
 def run_rhofold(seq, device=DEVICE):
