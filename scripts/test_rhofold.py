@@ -66,20 +66,13 @@ def run_rhofold(seq, device=DEVICE):
 
         output = outputs[-1]
 
-        # cords_c1' is a list of length 1 containing the tensor
-        c1_raw    = output["cords_c1'"][0]  # get the tensor from the list
-        c1_coords = c1_raw.cpu().numpy()    # shape (L, 3)
+        # cords_c1' is a list of 1 tensor, shape (1, L, 3)
+        c1_coords = output["cords_c1'"][0][0].cpu().numpy()  # shape (L, 3)
 
-        # plddt shape check
-        plddt_raw = output['plddt']
-        if isinstance(plddt_raw, (list, tuple)):
-            plddt = plddt_raw[0].cpu().numpy()
-        else:
-            plddt = plddt_raw.cpu().numpy()
-        if plddt.ndim > 1:
-            plddt = plddt.mean(axis=-1)
+        # plddt is a list: [0] shape (1, L), [1] shape (1,)
+        plddt = output['plddt'][0][0].cpu().numpy()  # shape (L,)
 
-        return c1_coords.astype(np.float32), float(np.nanmean(plddt))
+        return c1_coords.astype(np.float32), float(plddt.mean())
 
         return c1_coords.astype(np.float32), float(plddt.mean())
 
