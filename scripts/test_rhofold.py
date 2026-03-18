@@ -81,7 +81,7 @@ results = {}
 for _, row in stub_targets.iterrows():
     tid = row['target_id']
     seq = row['sequence']
-    if len(seq) > 500:
+    if len(seq) > 2000:
         print(f"  {tid}: SKIP (len={len(seq)}, too long for test)")
         continue
     print(f"  {tid} ({len(seq)}nt)...", end=' ', flush=True)
