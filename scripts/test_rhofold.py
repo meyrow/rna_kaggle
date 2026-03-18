@@ -65,22 +65,12 @@ def run_rhofold(seq, device=DEVICE):
             outputs = model(tokens, rna_fm_tokens, seq_out)
 
         output = outputs[-1]
-        coords = output['cord_tns_pred'][0].cpu().numpy()  # (L, n_atoms, 3)
 
-        # Debug: print available keys and coord shape
-        print(f"\n    output keys: {list(output.keys())}")
-        print(f"    cord_tns_pred shape: {coords.shape}")
+        # Use the explicit C1' output key
+        c1_coords = output["cords_c1'"][0].cpu().numpy()  # shape (L, 3)
+        plddt     = output['plddt'][0].cpu().numpy()       # shape (L,)
 
-        # Try all atom indices to find C1'
-        if coords.ndim == 3:
-            for atom_idx in range(coords.shape[1]):
-                c = coords[:, atom_idx, :]
-                if not np.any(np.isnan(c)):
-                    dists = np.linalg.norm(np.diff(c, axis=0), axis=1)
-                    print(f"    atom[{atom_idx}]: mean={dists.mean():.2f}Å max={dists.max():.2f}Å")
-
-        c1_coords = coords[:, 1, :]  # C1' = atom index 1
-        return c1_coords.astype(np.float32)
+        return c1_coords.astype(np.float32), float(plddt.mean())
 
 print("\nRunning RhoFold inference...")
 results = {}
@@ -93,10 +83,10 @@ for _, row in stub_targets.iterrows():
     print(f"  {tid} ({len(seq)}nt)...", end=' ', flush=True)
     t0 = time.time()
     try:
-        coords = run_rhofold(seq)
+        coords, plddt = run_rhofold(seq)
         elapsed = time.time() - t0
         dists = np.linalg.norm(np.diff(coords, axis=0), axis=1)
-        print(f"OK in {elapsed:.1f}s  C1-C1 mean={dists.mean():.2f}Å")
+        print(f"OK in {elapsed:.1f}s  C1-C1 mean={dists.mean():.2f}Å  pLDDT={plddt:.1f}")
         results[tid] = coords
     except Exception as e:
         print(f"FAILED: {e}")
