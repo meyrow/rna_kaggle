@@ -66,7 +66,26 @@ def run_rhofold(seq, device=DEVICE):
 
         output = outputs[-1]
 
-        # Use the explicit C1' output key
+        # Debug cords_c1' shape and values
+        c1_raw = output["cords_c1'"]
+        print(f"\n    cords_c1' type={type(c1_raw)} ", end='')
+        if hasattr(c1_raw, 'shape'):
+            print(f"shape={c1_raw.shape} ", end='')
+            arr = c1_raw.cpu().numpy()
+            print(f"nan={np.isnan(arr).sum()} min={np.nanmin(arr):.2f} max={np.nanmax(arr):.2f}")
+        elif isinstance(c1_raw, (list, tuple)):
+            print(f"len={len(c1_raw)}")
+            for i, x in enumerate(c1_raw[:2]):
+                if hasattr(x, 'shape'):
+                    arr = x.cpu().numpy()
+                    print(f"    [{i}] shape={x.shape} nan={np.isnan(arr).sum()}")
+
+        # Also check 'p', 'c4_', 'n' keys which are specific atoms
+        for key in ['p', "c4'", 'n', 'c1p']:
+            if key in output:
+                arr = output[key][0].cpu().numpy() if hasattr(output[key], '__len__') else output[key].cpu().numpy()
+                print(f"    key '{key}': shape={arr.shape} nan={np.isnan(arr).sum()}")
+
         c1_coords = output["cords_c1'"][0].cpu().numpy()  # shape (L, 3)
         plddt     = output['plddt'][0].cpu().numpy()       # shape (L,)
 
