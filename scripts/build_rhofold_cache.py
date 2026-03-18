@@ -15,12 +15,14 @@ import sys, os, time, tempfile, json
 import numpy as np
 import pandas as pd
 
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 RHOFOLD_REPO = '/home/ilan/kaggle/data/models/rhofold'
 CKPT         = '/home/ilan/kaggle/data/models/rhofold/rhofold_pretrained_params.pt'
 DATA_DIR     = '/home/ilan/kaggle/data'
 OUT_JSON     = 'data/pdb_cache/rhofold_predictions.json'
 MAX_LEN      = 500   # skip sequences longer than this (single-shot)
-CHUNK_LEN    = 730   # for 9ZCC: split into chunks of this size
+CHUNK_LEN    = 400   # for long seqs: split into chunks of this size
 SEEDS        = [42, 123, 456, 789, 1337]
 
 sys.path.insert(0, RHOFOLD_REPO)
@@ -55,8 +57,6 @@ for _, r in stub_targets.iterrows():
 # ── RhoFold inference ─────────────────────────────────────────────────────────
 def run_single(seq, seed=42):
     """Run RhoFold on a sequence with a given seed. Returns (coords, plddt)."""
-    # RhoFold doesn't use random seeds for inference — deterministic
-    # We add small noise to input to get diversity
     rng = np.random.default_rng(seed)
     with tempfile.TemporaryDirectory() as tmpdir:
         fas_path = os.path.join(tmpdir, 'input.fasta')
@@ -67,7 +67,6 @@ def run_single(seq, seed=42):
         rna_fm_tokens = result['rna_fm_tokens'].to(DEVICE)
         seq_out       = result['seq']
 
-        # Add tiny noise to rna_fm_tokens for diversity across seeds
         if seed != 42:
             noise = torch.randn_like(rna_fm_tokens.float()) * 0.01 * (seed / 42)
             rna_fm_tokens = (rna_fm_tokens.float() + noise).to(rna_fm_tokens.dtype)
@@ -76,8 +75,13 @@ def run_single(seq, seed=42):
             outputs = model(tokens, rna_fm_tokens, seq_out)
 
         out       = outputs[-1]
-        c1_coords = out["cords_c1'"][0][0].cpu().numpy()   # (L, 3)
+        c1_coords = out["cords_c1'"][0][0].cpu().numpy()
         plddt     = out['plddt'][0][0].cpu().numpy().mean()
+
+        # Free GPU memory
+        del tokens, rna_fm_tokens, outputs
+        torch.cuda.empty_cache()
+
         return c1_coords.astype(np.float32), float(plddt)
 
 def run_chunked(seq, chunk_size=CHUNK_LEN, seed=42):
@@ -150,7 +154,7 @@ for _, row in stub_targets.iterrows():
     seq = row['sequence']
     L   = len(seq)
 
-    if L > 1500:
+    if L > 5000:
         print(f"{tid:<12} {L:>5}  {'':>6}  {'':>6}  {'':>6}  SKIP (>{1500}nt)")
         continue
 
