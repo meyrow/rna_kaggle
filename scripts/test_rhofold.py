@@ -52,37 +52,34 @@ for _, r in stub_targets.iterrows():
 def run_rhofold(seq, device=DEVICE):
     """Run RhoFold on a single sequence. Returns C1' coords shape (L, 3)."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Write FASTA
         fas_path = os.path.join(tmpdir, 'input.fasta')
         with open(fas_path, 'w') as f:
             f.write(f'>query\n{seq}\n')
 
-        # Get features (use single seq as MSA)
-        result = get_features(fas_path, fas_path)
-
-        # Debug: print what get_features returns
-        print(f"    get_features returned: type={type(result)}", end=' ')
-        if isinstance(result, (list, tuple)):
-            print(f"len={len(result)}, types={[type(x).__name__ for x in result]}")
-            tokens, rna_fm_tokens, seq_out = result
-        elif isinstance(result, dict):
-            print(f"keys={list(result.keys())}")
-            tokens       = result.get('msa_tokens', result.get('tokens'))
-            rna_fm_tokens = result.get('rna_fm_tokens')
-            seq_out      = result.get('seq', seq)
-        else:
-            print(f"value={str(result)[:100]}")
-            return None
-
-        tokens        = tokens.to(device)
-        rna_fm_tokens = rna_fm_tokens.to(device)
+        result        = get_features(fas_path, fas_path)
+        tokens        = result['tokens'].to(device)
+        rna_fm_tokens = result['rna_fm_tokens'].to(device)
+        seq_out       = result['seq']
 
         with torch.no_grad():
             outputs = model(tokens, rna_fm_tokens, seq_out)
 
-        output    = outputs[-1]
-        coords    = output['cord_tns_pred'][0].cpu().numpy()
-        c1_coords = coords[:, 1, :]
+        output = outputs[-1]
+        coords = output['cord_tns_pred'][0].cpu().numpy()  # (L, n_atoms, 3)
+
+        # Debug: print available keys and coord shape
+        print(f"\n    output keys: {list(output.keys())}")
+        print(f"    cord_tns_pred shape: {coords.shape}")
+
+        # Try all atom indices to find C1'
+        if coords.ndim == 3:
+            for atom_idx in range(coords.shape[1]):
+                c = coords[:, atom_idx, :]
+                if not np.any(np.isnan(c)):
+                    dists = np.linalg.norm(np.diff(c, axis=0), axis=1)
+                    print(f"    atom[{atom_idx}]: mean={dists.mean():.2f}Å max={dists.max():.2f}Å")
+
+        c1_coords = coords[:, 1, :]  # C1' = atom index 1
         return c1_coords.astype(np.float32)
 
 print("\nRunning RhoFold inference...")
