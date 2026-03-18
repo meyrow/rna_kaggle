@@ -55,22 +55,26 @@ for _, r in stub_targets.iterrows():
     print(f"  {r['target_id']}: {len(r['sequence'])}nt")
 
 # ── RhoFold inference ─────────────────────────────────────────────────────────
-def run_single(seq, seed=42):
-    """Run RhoFold on a sequence with a given seed. Returns (coords, plddt)."""
+def run_single(seq, seed=42, device=None):
+    """Run RhoFold on a sequence. Returns (coords, plddt)."""
+    if device is None:
+        device = DEVICE
     rng = np.random.default_rng(seed)
     with tempfile.TemporaryDirectory() as tmpdir:
         fas_path = os.path.join(tmpdir, 'input.fasta')
         with open(fas_path, 'w') as f:
             f.write(f'>query\n{seq}\n')
         result        = get_features(fas_path, fas_path)
-        tokens        = result['tokens'].to(DEVICE)
-        rna_fm_tokens = result['rna_fm_tokens'].to(DEVICE)
+        tokens        = result['tokens'].to(device)
+        rna_fm_tokens = result['rna_fm_tokens'].to(device)
         seq_out       = result['seq']
 
         if seed != 42:
             noise = torch.randn_like(rna_fm_tokens.float()) * 0.01 * (seed / 42)
             rna_fm_tokens = (rna_fm_tokens.float() + noise).to(rna_fm_tokens.dtype)
 
+        # Move model to target device for this inference
+        model.to(device)
         with torch.no_grad():
             outputs = model(tokens, rna_fm_tokens, seq_out)
 
@@ -78,11 +82,18 @@ def run_single(seq, seed=42):
         c1_coords = out["cords_c1'"][0][0].cpu().numpy()
         plddt     = out['plddt'][0][0].cpu().numpy().mean()
 
-        # Free GPU memory
         del tokens, rna_fm_tokens, outputs
-        torch.cuda.empty_cache()
+        if device == 'cuda':
+            torch.cuda.empty_cache()
 
         return c1_coords.astype(np.float32), float(plddt)
+
+
+def run_cpu_fallback(seq, seed=42):
+    """Run on CPU — slow but no VRAM limit."""
+    print(f"    → CPU fallback (may take several minutes)...", flush=True)
+    torch.cuda.empty_cache()
+    return run_single(seq, seed=seed, device='cpu')
 
 def run_chunked(seq, chunk_size=CHUNK_LEN, seed=42):
     """
@@ -155,10 +166,16 @@ for _, row in stub_targets.iterrows():
     L   = len(seq)
 
     if L > 5000:
-        print(f"{tid:<12} {L:>5}  {'':>6}  {'':>6}  {'':>6}  SKIP (>{1500}nt)")
+        print(f"{tid:<12} {L:>5}  {'':>6}  {'':>6}  {'':>6}  SKIP (>{5000}nt — too large even for CPU)")
         continue
 
-    print(f"{tid:<12} {L:>5}  ", end='', flush=True)
+    # Use CPU for sequences too long for GPU
+    use_cpu = L > MAX_LEN
+    if use_cpu:
+        print(f"{tid:<12} {L:>5}  ", end='', flush=True)
+        print(f"CPU-mode (len>{MAX_LEN})", flush=True)
+    else:
+        print(f"{tid:<12} {L:>5}  ", end='', flush=True)
     t0 = time.time()
 
     try:
@@ -166,7 +183,9 @@ for _, row in stub_targets.iterrows():
         plddts = []
 
         for seed in SEEDS:
-            if L > MAX_LEN:
+            if use_cpu:
+                coords, plddt = run_cpu_fallback(seq, seed=seed)
+            elif L > MAX_LEN:
                 coords, plddt = run_chunked(seq, seed=seed)
             else:
                 coords, plddt = run_single(seq, seed=seed)
