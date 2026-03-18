@@ -23,12 +23,13 @@ sys.path.insert(0, '.')
 print("Loading RhoFold...")
 import torch
 from rhofold.rhofold import RhoFold
+from rhofold.config import rhofold_config
 from rhofold.utils.alphabet import get_features
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Device: {DEVICE}")
 
-model = RhoFold()
+model = RhoFold(rhofold_config)
 ckpt  = torch.load(CKPT, map_location=DEVICE)
 state = ckpt['model'] if 'model' in ckpt else ckpt
 model.load_state_dict(state)
