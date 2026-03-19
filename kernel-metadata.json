@@ -10,7 +10,8 @@
   "enable_internet": false,
   "dataset_sources": [
     "ilanmeyrowitsch/rhofold-model",
-    "ilanmeyrowitsch/rna-templates"
+    "ilanmeyrowitsch/rna-templates",
+    "ilanmeyrowitsch/rhofold-src"
   ],
   "competition_sources": [
     "stanford-rna-3d-folding-2"
