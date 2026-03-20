@@ -24,6 +24,7 @@ OUT_JSON     = 'data/pdb_cache/rhofold_predictions.json'
 MAX_LEN      = 500   # skip sequences longer than this (single-shot)
 CHUNK_LEN    = 400   # for long seqs: split into chunks of this size
 SEEDS        = [42, 123, 456, 789, 1337]
+MSA_DIR      = 'data/msa'  # MSA files from build_msa_from_training.py
 
 sys.path.insert(0, RHOFOLD_REPO)
 sys.path.insert(0, '.')
@@ -55,7 +56,7 @@ for _, r in stub_targets.iterrows():
     print(f"  {r['target_id']}: {len(r['sequence'])}nt")
 
 # ── RhoFold inference ─────────────────────────────────────────────────────────
-def run_single(seq, seed=42, device=None):
+def run_single(seq, seed=42, device=None, msa_path=None):
     """Run RhoFold on a sequence. Returns (coords, plddt)."""
     if device is None:
         device = DEVICE
@@ -64,7 +65,9 @@ def run_single(seq, seed=42, device=None):
         fas_path = os.path.join(tmpdir, 'input.fasta')
         with open(fas_path, 'w') as f:
             f.write(f'>query\n{seq}\n')
-        result        = get_features(fas_path, fas_path)
+        # Use MSA file if available
+        _msa = msa_path if msa_path and os.path.exists(msa_path) else fas_path
+        result        = get_features(fas_path, _msa)
         tokens        = result['tokens'].to(device)
         rna_fm_tokens = result['rna_fm_tokens'].to(device)
         seq_out       = result['seq']
@@ -182,13 +185,20 @@ for _, row in stub_targets.iterrows():
         all_coords_list = []
         plddts = []
 
+        # Check for MSA file
+        msa_path = os.path.join(MSA_DIR, f'{tid}.fasta')
+        has_msa  = os.path.exists(msa_path)
+        if has_msa:
+            print(f"  (using MSA: {msa_path})", flush=True)
+
         for seed in SEEDS:
             if use_cpu:
                 coords, plddt = run_cpu_fallback(seq, seed=seed)
             elif L > MAX_LEN:
                 coords, plddt = run_chunked(seq, seed=seed)
             else:
-                coords, plddt = run_single(seq, seed=seed)
+                coords, plddt = run_single(seq, seed=seed,
+                                           msa_path=msa_path if has_msa else None)
             all_coords_list.append(coords.tolist())
             plddts.append(plddt)
 
