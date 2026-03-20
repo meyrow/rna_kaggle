@@ -27,8 +27,28 @@ os.makedirs(OUT_DIR, exist_ok=True)
 print("Loading training sequences...")
 train = pd.read_csv(f'{DATA_DIR}/train_sequences.csv')
 train['sequence'] = train['sequence'].str.upper().str.replace('T','U')
-# Take first sequence from all_sequences if present
-print(f"  {len(train)} training sequences")
+
+# Extract all sequences from the all_sequences column (102K sequences)
+all_seqs = []
+for _, row in train.iterrows():
+    # Add primary sequence
+    all_seqs.append(row['sequence'])
+    # Parse all_sequences FASTA field
+    fasta_str = str(row.get('all_sequences', ''))
+    if fasta_str and fasta_str != 'nan':
+        seq = ''
+        for line in fasta_str.split('\n'):
+            line = line.strip()
+            if line.startswith('>'):
+                if seq: all_seqs.append(seq.upper().replace('T','U'))
+                seq = ''
+            else:
+                seq += line
+        if seq: all_seqs.append(seq.upper().replace('T','U'))
+
+# Deduplicate
+all_seqs = list(set(s for s in all_seqs if len(s) >= 10))
+print(f"  {len(all_seqs)} unique sequences loaded")
 
 # ── Load stub target sequences ────────────────────────────────────────────────
 test = pd.read_csv(f'{DATA_DIR}/test_sequences.csv')
@@ -75,8 +95,8 @@ def build_msa(query_seq, train_seqs, top_n=TOP_N, min_sim=MIN_SIM):
 # Pre-build k-mer sets for training sequences (fast lookup)
 print("Pre-computing training k-mers...")
 t0 = time.time()
-train_seqs = train['sequence'].tolist()
-print(f"  Done in {time.time()-t0:.1f}s")
+train_seqs = all_seqs
+print(f"  {len(train_seqs)} sequences ready in {time.time()-t0:.1f}s")
 
 # ── Build MSA for each stub target ───────────────────────────────────────────
 print(f"\n{'Target':<12} {'Len':>5}  {'MSA_hits':>9}  {'Top_sim':>8}  Status")
