@@ -31,9 +31,17 @@ def usalign_tm(pred_coords, ref_coords):
             [USALIGN, f'{d}/pred.pdb', f'{d}/ref.pdb', '-atom', ' C1\''],
             capture_output=True, text=True
         )
+        tm_scores = []
         for line in result.stdout.split('\n'):
-            if 'TM-score=' in line and 'Structure_2' in line:
-                return float(line.split('TM-score=')[1].split()[0])
+            if line.strip().startswith('TM-score='):
+                try:
+                    tm_scores.append(float(line.split('TM-score=')[1].split()[0]))
+                except: pass
+        # Second TM-score is normalized by ref (Structure_2)
+        if len(tm_scores) >= 2:
+            return tm_scores[1]
+        elif tm_scores:
+            return tm_scores[0]
     return 0.0
 
 # Load data
