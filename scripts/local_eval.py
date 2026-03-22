@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.utils.tm_score import _tm_approx
+from src.utils.tm_score_rna import tm_score_rna as _tm_approx
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DATA_DIR   = '/home/ilan/kaggle/data'
